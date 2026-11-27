@@ -5,7 +5,7 @@
  * private address and is not.
  */
 import { plural } from "@opscrew/core";
-import { serviceSpec } from "@opscrew/iac-templates";
+import { APP_KAMAL_PROXY_SERVICE, serviceSpec } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { NetworkLink } from "../network";
 
@@ -48,8 +48,9 @@ function linkText(link: NetworkLink): string {
   return `${link.up ? "up" : "down"}, ${handshakeText(link)}`;
 }
 
-/** A service's words: `PostgreSQL (db)`. */
+/** A service's words: `PostgreSQL (db)`, or `The app proxy` for `app-proxy`. */
 export function serviceWords(plan: DeployPlan, name: string): string {
+  if (name === APP_KAMAL_PROXY_SERVICE) return "The app proxy";
   const service = plan.services.find((s) => s.name === name);
   return service === undefined ? name : `${serviceSpec(service.kind).title} (${name})`;
 }

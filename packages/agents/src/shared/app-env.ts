@@ -312,6 +312,7 @@ export function choosingSettingValue(name: string, owner: ChoosingOwner): string
 export function serviceAppVariables(
   plan: DeployPlan,
   secret: (service: PlanService, name: string) => string,
+  consumerServer?: string,
 ): Map<string, string> {
   const running = plan.services.filter((service) => service.enabled);
   const own = new Set(running.flatMap((s) => (s.variable === undefined ? [] : [s.variable])));
@@ -322,6 +323,7 @@ export function serviceAppVariables(
       service,
       secretRef: (name) => secret(service, name),
       ...(service.variable === undefined ? {} : { variable: service.variable }),
+      ...(consumerServer === undefined ? {} : { consumerServer }),
     });
     for (const [name, value] of Object.entries(variables)) {
       if (values.has(name) || isClientExposedEnvName(name)) continue;
@@ -338,7 +340,12 @@ export function serviceAppVariables(
   const database = reads.has("DB_HOST") ? splitDatabase(plan) : undefined;
   const settings =
     database &&
-    splitDatabaseSettings({ plan, service: database, secretRef: (name) => secret(database, name) });
+    splitDatabaseSettings({
+      plan,
+      service: database,
+      secretRef: (name) => secret(database, name),
+      ...(consumerServer === undefined ? {} : { consumerServer }),
+    });
   if (settings !== undefined) {
     fill(
       Object.fromEntries(
@@ -347,7 +354,7 @@ export function serviceAppVariables(
     );
   }
   const redis = urlService(plan, "redis");
-  if (redis !== undefined) fill(redisSettings(plan, redis, secret));
+  if (redis !== undefined) fill(redisSettings(plan, redis, secret, consumerServer));
   return values;
 }
 
@@ -359,6 +366,7 @@ function redisSettings(
   plan: DeployPlan,
   service: PlanService,
   secret: (service: PlanService, name: string) => string,
+  consumerServer?: string,
 ): Record<string, string | undefined> {
   // The address's parts are read with a stand-in for the secret, whatever characters it has.
   let login: string | undefined;
@@ -369,6 +377,7 @@ function redisSettings(
       login = name;
       return "secret";
     },
+    ...(consumerServer === undefined ? {} : { consumerServer }),
   });
   const url = new URL(address);
   return {
@@ -376,6 +385,41 @@ function redisSettings(
     REDIS_PORT: url.port,
     REDIS_PASSWORD: login === undefined ? undefined : secret(service, login),
   };
+}
+
+/**
+ * Renders `app.env` for the copy server `consumerServer` (033): starts from the assembled app
+ * values (`environment.values.app`) and re-resolves every service connection variable and derived
+ * service URL alias from `consumerServer`'s vantage point (private WireGuard IPs for services on
+ * other servers, Docker DNS for any service co-located on `consumerServer`).
+ */
+export function copyServerAppEnv(
+  plan: DeployPlan,
+  environment: Pick<AppEnvironment, "values">,
+  consumerServer: string,
+): string {
+  const secret = (service: PlanService, name: string): string => {
+    const value = environment.values.services[service.name]?.[name];
+    if (value === undefined) throw new Error(`${service.name} has no secret ${name}.`);
+    return value;
+  };
+  const values: Record<string, string> = { ...environment.values.app };
+  const serviceVars = serviceAppVariables(plan, secret, consumerServer);
+  for (const [name, value] of serviceVars) values[name] = value;
+  for (const variable of plan.app.env) {
+    if (serviceVars.has(variable.name) || variable.source !== "derived") continue;
+    const alias = serviceUrlKind(variable.name);
+    if (alias === undefined) continue;
+    const aliased = urlService(plan, alias);
+    if (aliased === undefined) continue;
+    values[variable.name] = serviceSpec(aliased.kind).address({
+      plan,
+      service: aliased,
+      consumerServer,
+      secretRef: (name) => secret(aliased, name),
+    });
+  }
+  return appEnvText(values);
 }
 
 /** What an object storage variable holds, from its name. */

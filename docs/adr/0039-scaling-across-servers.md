@@ -34,3 +34,4 @@ OpsCrew's split placement (ADR 0022, Feature `018`) places databases, caches, an
 
 ### D5. Zero-downtime serial 1-by-1 rolling deploys
 - Deploy workflows pull `$APP_IMAGE` on all web/worker servers first, run pre-release DB snapshot + `releaseCommand` **once** on `app`, then roll web copies one server at a time (`app` first, then each `app.servers[]` copy), verifying health before advancing and rolling back failed + already-updated copies on failure. Worker copies roll after web succeeds.
+

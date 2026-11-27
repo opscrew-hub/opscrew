@@ -1,4 +1,5 @@
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { APP_KAMAL_PROXY_SERVICE } from "../edge";
 import { publishedOnNetwork } from "../runtime";
 import { shellQuote } from "../runtime/services";
 
@@ -38,7 +39,10 @@ export function publicSshClosed(plan: DeployPlan): boolean {
  */
 export function portRepair(plan: DeployPlan, server: string): string[] {
   // Without options it lists no dashboards, which live in other Compose projects.
-  const ports = publishedOnNetwork(plan, server);
+  // Copy-server `app-proxy` is ensured and repaired when the copy switch runs (`ensureCopyAppProxy`).
+  const ports = publishedOnNetwork(plan, server).filter(
+    (p) => p.service !== APP_KAMAL_PROXY_SERVICE,
+  );
   if (ports.length === 0) return [];
   const where = server === APP_SERVER ? "the app's server" : `the server ${server}`;
   return [

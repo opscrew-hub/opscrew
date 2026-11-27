@@ -24,6 +24,7 @@ import { POOLER_HEALTHCHECK, POOLER_MEMORY_MB, POOLER_PORT, poolerStart } from "
 import { RUNTIME_PASSWORD_ENV } from "../catalog/postgres-logins";
 import type { ServiceHealthcheck, ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
+import { APP_COPY_PROXY_PORT, APP_KAMAL_PROXY_SERVICE } from "../edge";
 import { IMAGES } from "../pins";
 import { runtimeDir } from "../runtime-dir";
 import { BESZEL_PORT, PORTAINER_PORT } from "../tunnel";
@@ -32,7 +33,7 @@ import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { filesFolder, planFilePath, sqliteFolder } from "../workflow/shared";
 import { RUBY_WITHOUT_RUBYOPT } from "./healthcheck";
 import { servicesRunningOn } from "./move";
-import { dashboardAddress, publishedAddress } from "./network";
+import { dashboardAddress, privateAddress, publishedAddress } from "./network";
 import { composeLiteral, hardened, scriptLiteral, shellQuote } from "./services";
 
 /** `mem_limit` and an equal `memswap_limit`: Docker's default lets a container swap as much again. */
@@ -405,8 +406,18 @@ export function publishedOnNetwork(
         : [{ service: poolerName(service), port: POOLER_PORT, address: pooler }]),
     ];
   });
+  const copyProxy =
+    server !== APP_SERVER && (plan.app.servers?.includes(server) ?? false)
+      ? [
+          {
+            service: APP_KAMAL_PROXY_SERVICE,
+            port: APP_COPY_PROXY_PORT,
+            address: privateAddress(plan, server),
+          },
+        ]
+      : [];
   const address = server === APP_SERVER ? dashboardAddress(plan, options) : undefined;
-  if (address === undefined) return services;
+  if (address === undefined) return [...services, ...copyProxy];
   const beszel = plan.observability?.beszel;
   const dashboard = (service: string, port: number) => ({
     service,
@@ -416,6 +427,7 @@ export function publishedOnNetwork(
   });
   return [
     ...services,
+    ...copyProxy,
     ...(beszel?.enabled && beszel.mode === "hub" ? [dashboard("beszel", BESZEL_PORT)] : []),
     ...(plan.portainer?.enabled ? [dashboard("portainer", PORTAINER_PORT)] : []),
   ];

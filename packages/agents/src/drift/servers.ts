@@ -13,13 +13,17 @@ import {
 import type { RemoteExec } from "@opscrew/contracts";
 import { errorText, isUserFacingError, sha256Hex } from "@opscrew/core";
 import {
+  copyServerEnvSecrets,
+  hasWorkerDbEnv,
   IMAGES,
   keepNewerPins,
+  processServices,
   renderServerCompose,
   serviceEnvSecret,
   serviceSpec,
+  WORKER_DB_ENV,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, servicesOn } from "@opscrew/plan-schema";
+import { APP_SERVER, appCopyServers, type DeployPlan, servicesOn } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { networkHostPlan, publicEndpoints } from "../network";
 import type { ProvisionServices } from "../provision/types";
@@ -124,15 +128,32 @@ async function extraServerFiles(
 ): Promise<HostDifference[]> {
   const compose = renderServerCompose(plan, name);
   const committed = await committedText(deps.paths.root, [compose.path]);
+  const isCopy = appCopyServers(plan).includes(name);
+  const copySecrets = isCopy ? copyServerEnvSecrets(name) : undefined;
+  const copyEnvEntries: [string, { title: string; secret: string }][] =
+    copySecrets === undefined
+      ? []
+      : [
+          ["app.env", { title: "the app", secret: copySecrets.appEnv }],
+          ...(hasWorkerDbEnv(plan) && processServices(plan, name).length > 0
+            ? [
+                [
+                  WORKER_DB_ENV.file,
+                  { title: "the workers' database", secret: copySecrets.workerDbEnv },
+                ] as [string, { title: string; secret: string }],
+              ]
+            : []),
+        ];
   const expected: ExpectedRuntimeFiles = {
     rendered: { "compose.yaml": sha256Hex(keepNewerPins(committed, compose.content)) },
     sitePath: "",
-    serviceEnvFiles: Object.fromEntries(
-      servicesOn(plan, name).map((service) => [
+    serviceEnvFiles: Object.fromEntries([
+      ...servicesOn(plan, name).map((service) => [
         `${service.name}.env`,
         { title: serviceSpec(service.kind).title, secret: serviceEnvSecret(service.name) },
       ]),
-    ),
+      ...copyEnvEntries,
+    ]),
   };
   // Only the files the deploy writes on an extra server: its Compose file and its env files.
   const wanted = new Set(["compose.yaml", ...Object.keys(expected.serviceEnvFiles)]);

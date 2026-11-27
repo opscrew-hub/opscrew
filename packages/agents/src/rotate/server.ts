@@ -12,9 +12,12 @@ import type { CommandResult, RemoteRunOptions } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import {
   appDir,
+  copyServerEnvSecrets,
   DEPLOY_PAUSED_VARIABLE,
   DEPLOY_SECRETS,
   hasLogin,
+  hasWorkerDbEnv,
+  processServices,
   RELEASE_DB_ENV,
   ROTATE_APPROVAL_FILE,
   ROTATE_DIR,
@@ -28,7 +31,9 @@ import {
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  appCopyServers,
   type DeployPlan,
+  hasRemoteAppCopies,
   onOneServer,
   type PlanService,
   postgresLogins,
@@ -389,14 +394,26 @@ const DB_ENV_FILES = [RELEASE_DB_ENV, WORKER_DB_ENV];
  * settings, the release's with a PostgreSQL's own logins, the workers' beside its pooler, and each
  * running one's env file.
  */
-function rotatedSecrets(services: readonly PlanService[]): string[] {
+function rotatedSecrets(plan: DeployPlan, services: readonly PlanService[]): string[] {
   const running = services.filter((s) => s.enabled);
+  const copySecrets = appCopyServers(plan).flatMap((server) => {
+    const names = copyServerEnvSecrets(server);
+    return [
+      names.appEnv,
+      ...(running.some(postgresPooler) &&
+      hasWorkerDbEnv(plan) &&
+      processServices(plan, server).length > 0
+        ? [names.workerDbEnv]
+        : []),
+    ];
+  });
   return [
     DEPLOY_SECRETS.appEnv,
     // A PostgreSQL's own logins change the release's env file too (047), and its runtime login
     // the workers' beside its pooler (050).
     ...(running.some(postgresLogins) ? [RELEASE_DB_ENV.secret] : []),
     ...(running.some(postgresPooler) ? [WORKER_DB_ENV.secret] : []),
+    ...copySecrets,
     ...running.map((s) => serviceEnvSecret(s.name)),
   ];
 }
@@ -433,6 +450,8 @@ interface Rotation {
    * every running service's.
    */
   envFiles: Readonly<Record<string, string>>;
+  /** Per-copy-server env files (`app.env`, optional `worker.db.env`) with WireGuard addresses (033). */
+  copyEnvFiles?: ReadonlyMap<string, Readonly<Record<string, string>>>;
   /** `opscrew rotate <names> [flags]`. */
   again: string;
 }
@@ -456,10 +475,11 @@ async function runScript(rotation: Rotation, run: ServerRun, action: RotateActio
     throw hostFailure(deps, host, left, "leave the rotation's script and its one-time approval");
   }
   const steps = run.steps.map((step) => step.step);
+  const envFiles = rotation.copyEnvFiles?.get(run.server) ?? rotation.envFiles;
   const input = rotateInput(
     rotation.plan,
     steps,
-    { envFiles: rotation.envFiles, values: run.steps.map((step) => stepValues(step, pending)) },
+    { envFiles, values: run.steps.map((step) => stepValues(step, pending)) },
     run.server,
   );
   const args = action === "rotate" ? [hash] : [action === "undo" ? "--undo" : action, hash];
@@ -532,21 +552,47 @@ async function rotateOnServers(
   const { deps, plan, runs } = rotation;
   const app = runs.find((run) => run.server === APP_SERVER) as ServerRun;
   const extras = runs.filter((run) => run.server !== APP_SERVER);
+  const copies = appCopyServers(plan);
+  const multiCopy = hasRemoteAppCopies(plan);
   let stage: "secrets" | "servers" | "finish" = "secrets";
   try {
     deps.reporter.step("Replacing the deploy secrets in GitHub with the new values");
     await replaceSecrets(deps, github, plan, secrets);
     stage = "servers";
-    for (const run of extras) {
+    if (!multiCopy) {
+      for (const run of extras) {
+        deps.reporter.step(`Giving the services on ${serverWords(run.server)} their new values`);
+        await runScript(rotation, run, "begin");
+      }
+      deps.reporter.step(
+        "Rotating on the app's server: the services, the env files, the app's switch",
+      );
+      await runScript(rotation, app, "rotate");
+      await keepPendingRotation(deps, { ...rotation.pending, step: "switched" });
+      stage = "finish";
+      for (const run of extras) {
+        deps.reporter.step(`Dropping the old values on ${serverWords(run.server)}`);
+        await runScript(rotation, run, "finish");
+      }
+      return;
+    }
+    const serviceExtras = extras.filter((run) => run.steps.length > 0);
+    for (const run of serviceExtras) {
       deps.reporter.step(`Giving the services on ${serverWords(run.server)} their new values`);
       await runScript(rotation, run, "begin");
     }
-    deps.reporter.step(
-      "Rotating on the app's server: the services, the env files, the app's switch",
-    );
-    await runScript(rotation, app, "rotate");
+    deps.reporter.step("Switching the app's server: the services, the env files, the app's switch");
+    await runScript(rotation, app, "begin");
+    for (const name of copies) {
+      const run = extras.find((each) => each.server === name);
+      if (run === undefined) continue;
+      deps.reporter.step(`Switching copy server ${name} to the new values`);
+      await runScript(rotation, run, run.steps.length > 0 ? "switch" : "begin");
+    }
     await keepPendingRotation(deps, { ...rotation.pending, step: "switched" });
     stage = "finish";
+    deps.reporter.step("Dropping the old values on the app's server");
+    await runScript(rotation, app, "finish");
     for (const run of extras) {
       deps.reporter.step(`Dropping the old values on ${serverWords(run.server)}`);
       await runScript(rotation, run, "finish");
@@ -557,9 +603,9 @@ async function rotateOnServers(
 }
 
 /**
- * The undo of the unfinished rotation, with the app's deploys paused: the app's server's
- * `--undo` first (it refuses once its run finished, as the old values may be gone), then each
- * extra server's, then GitHub's secrets with the old values.
+ * The undo of the unfinished rotation, with the app's deploys paused: on multi-copy plans, copy
+ * servers first in reverse order, then the app's server, then backing extra servers; otherwise the
+ * app's server first, then each extra server, then GitHub's secrets with the old values.
  */
 async function undoOnServers(
   rotation: Rotation,
@@ -567,8 +613,18 @@ async function undoOnServers(
   github: RotateServicesOptions["github"],
 ): Promise<void> {
   const { deps, plan, runs, again } = rotation;
+  const copies = appCopyServers(plan);
+  const ordered = hasRemoteAppCopies(plan)
+    ? [
+        ...[...copies]
+          .reverse()
+          .map((name) => runs.find((run) => run.server === name))
+          .filter((run): run is ServerRun => run !== undefined),
+        ...runs.filter((run) => !copies.includes(run.server)),
+      ]
+    : runs;
   try {
-    for (const run of runs) {
+    for (const run of ordered) {
       deps.reporter.step(`Putting the old values back on ${serverWords(run.server)}`);
       await runScript(rotation, run, "undo");
     }
@@ -590,24 +646,44 @@ async function envFilesWith(
   values: RotationValues,
   appEnv: string | undefined,
   side: "old" | "new",
+  consumerServer?: string,
 ): Promise<Record<string, string>> {
   const { from, to } = await serviceSides(deps, plan, values, side);
   return {
     ...serviceEnvTexts(plan, to),
-    ...dbEnvFiles(plan, to),
+    ...dbEnvFiles(plan, to, consumerServer),
     ...(appEnv === undefined
       ? {}
-      : { "app.env": withAppEnv(swapAppEnv(plan, appEnv, values, from, to), values.app, side) }),
+      : {
+          "app.env": withAppEnv(
+            swapAppEnv(plan, appEnv, values, from, to, consumerServer),
+            values.app,
+            side,
+          ),
+        }),
   };
 }
 
-/** The deploy secrets of {@link rotatedSecrets} with the env files `files`. */
+/** The deploy secrets of {@link rotatedSecrets} with the env files `files` (and per-copy files). */
 function secretValues(
+  plan: DeployPlan,
   services: readonly PlanService[],
   files: Readonly<Record<string, string>>,
+  copyFiles?: ReadonlyMap<string, Readonly<Record<string, string>>>,
 ): Record<string, string> {
+  const copyMap = new Map<string, string>();
+  for (const server of appCopyServers(plan)) {
+    const names = copyServerEnvSecrets(server);
+    const serverFiles = copyFiles?.get(server);
+    if (serverFiles?.["app.env"] !== undefined) copyMap.set(names.appEnv, serverFiles["app.env"]);
+    if (serverFiles?.[WORKER_DB_ENV.file] !== undefined) {
+      copyMap.set(names.workerDbEnv, serverFiles[WORKER_DB_ENV.file] as string);
+    }
+  }
   return Object.fromEntries(
-    rotatedSecrets(services).map((name) => {
+    rotatedSecrets(plan, services).map((name) => {
+      const copyVal = copyMap.get(name);
+      if (copyVal !== undefined) return [name, copyVal];
       const file =
         name === DEPLOY_SECRETS.appEnv
           ? "app.env"
@@ -651,6 +727,7 @@ export async function rotateOnServer(
   if (run === undefined) return;
   const host = await rotateHost(deps, plan, server, options);
   const app = server === APP_SERVER;
+  const isCopy = !app && appCopyServers(plan).includes(server);
   const rotation: Rotation = {
     deps,
     plan,
@@ -659,11 +736,12 @@ export async function rotateOnServer(
     from: "started",
     runs: [run],
     hosts: new Map([[server, host]]),
-    envFiles: await envFilesWith(deps, plan, values, appEnv, "new"),
+    envFiles: await envFilesWith(deps, plan, values, appEnv, "new", app ? undefined : server),
     again,
   };
-  if (app) return runScript(rotation, run, "rotate");
+  if (app && !hasRemoteAppCopies(plan)) return runScript(rotation, run, "rotate");
   await runScript(rotation, run, "begin");
+  if (isCopy && run.steps.length > 0) await runScript(rotation, run, "switch");
   await runScript(rotation, run, "finish");
 }
 
@@ -840,6 +918,15 @@ async function runRotation(
     runs.length === 0
       ? undefined
       : await readAppEnv(deps, hosts.get(APP_SERVER) as RotateHost, plan, again, flags);
+  const copyAppEnvs = new Map<string, string>();
+  if (runs.length > 0) {
+    for (const server of appCopyServers(plan)) {
+      const host = hosts.get(server);
+      if (host !== undefined) {
+        copyAppEnvs.set(server, await readAppEnv(deps, host, plan, again, flags));
+      }
+    }
+  }
   // Only the values of a reused file: a planned one of Portainer or this computer (T2507) also
   // holds that path's progress, which the servers' rotation must not carry.
   const values: RotationValues =
@@ -856,12 +943,20 @@ async function runRotation(
           ...(reused.app ? { app: reused.app } : {}),
         };
   const envFiles = await envFilesWith(deps, plan, values, appEnv, "new");
+  const copyEnvFilesWith = async (side: "old" | "new") => {
+    const map = new Map<string, Readonly<Record<string, string>>>();
+    for (const [server, text] of copyAppEnvs) {
+      map.set(server, await envFilesWith(deps, plan, values, text, side, server));
+    }
+    return map;
+  };
+  const copyEnvFiles = await copyEnvFilesWith("new");
   const input: RotationPlan = {
     services,
     values,
     runs,
     secrets:
-      runs.length === 0 ? [] : rotatedSecrets(changed).map((n) => deploySecretPlace(plan, n)),
+      runs.length === 0 ? [] : rotatedSecrets(plan, changed).map((n) => deploySecretPlace(plan, n)),
   };
   const hash = rotationHash(deps, plan, input);
   // The servers' state of a rotation that began is bound to its hash.
@@ -878,19 +973,31 @@ async function runRotation(
   // Kept before the approval, so a run approved by the hash shown reuses the same values.
   const pending: PendingRotation = { ...values, hash, step: from };
   await keepPendingRotation(deps, pending);
-  const rotation: Rotation = { deps, plan, hash, pending, from, runs, hosts, envFiles, again };
+  const rotation: Rotation = {
+    deps,
+    plan,
+    hash,
+    pending,
+    from,
+    runs,
+    hosts,
+    envFiles,
+    ...(copyEnvFiles.size > 0 ? { copyEnvFiles } : {}),
+    again,
+  };
 
   if (options.undo === true) {
     const undo = await approveUndo(deps, input, hash, again);
     if (runs.length > 0) {
       const old = await envFilesWith(deps, plan, values, appEnv, "old");
+      const oldCopies = await copyEnvFilesWith("old");
       await withDeploysPausedUntilDone(
         deps,
         options.github,
         plan,
         options,
         { command: `${again} --undo`, hash },
-        () => undoOnServers(rotation, secretValues(changed, old), options.github),
+        () => undoOnServers(rotation, secretValues(plan, changed, old, oldCopies), options.github),
       );
     }
     await dropPendingRotation(deps);
@@ -910,7 +1017,12 @@ async function runRotation(
       plan,
       options,
       { command: again, hash },
-      () => rotateOnServers(rotation, secretValues(changed, envFiles), options.github),
+      () =>
+        rotateOnServers(
+          rotation,
+          secretValues(plan, changed, envFiles, copyEnvFiles),
+          options.github,
+        ),
     );
   }
   await completePendingRotation(deps, plan, values);

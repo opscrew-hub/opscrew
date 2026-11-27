@@ -44,3 +44,4 @@ Feature `033` Phase 1 builds directly on Feature `018` (split placement + WireGu
 - **Contributor (`Windwalker4u` — clean parallel zero-conflict slices on `033-scaling`):**
   - **Slice A (`T3304`):** `@opscrew/detect` stateless readiness detection (`packages/detect/src/stateless.ts` + tests) — starts immediately after Wave 1 pushes!
   - **Slice B (`T3310`):** `@opscrew/agents` `design` & `advise` scaling checks (stateless gate, PgBouncer recommendation, copy-server memory sizing & cross-provider/region DB latency warning + unit tests) — starts right after Slice A merges into `033-scaling`!
+

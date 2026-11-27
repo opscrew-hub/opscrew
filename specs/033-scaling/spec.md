@@ -60,3 +60,4 @@ As a developer, I want every deploy and rollback to roll across my web copies on
 - Managed cloud load balancers (Hetzner LB11, DigitalOcean LB, OVHcloud Octavia, Cloudflare LB) — Phase 1 ships the universal `$0` front-server WireGuard load balancer that works identically across all providers and own servers; `scaling.loadBalancer.kind` is designed to add managed LBs additively later.
 - Canary / percentage rollouts (`kamal-proxy rollout set --percent`).
 - Self-hosted PostgreSQL streaming replicas / manual `pg_promote()`.
+

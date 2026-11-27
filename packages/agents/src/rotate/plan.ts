@@ -17,7 +17,9 @@ import {
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  appCopyServers,
   type DeployPlan,
+  hasRemoteAppCopies,
   type PlanService,
   poolerName,
   postgresPooler,
@@ -196,9 +198,10 @@ export function serverRuns(
   app = false,
 ): ServerRun[] {
   if (steps.length === 0 && !app) return [];
+  const copies = new Set(appCopyServers(plan));
   return [APP_SERVER, ...extraServers(plan)]
     .map((server) => ({ server, steps: steps.filter((step) => step.server === server) }))
-    .filter((run) => run.server === APP_SERVER || run.steps.length > 0)
+    .filter((run) => run.server === APP_SERVER || run.steps.length > 0 || copies.has(run.server))
     .map((run) => ({
       ...run,
       script: `${renderRotateScript(
@@ -340,22 +343,44 @@ export async function approveRotation(
   const servicesOf = (run: ServerRun) =>
     listText([...new Set(run.steps.map((step) => step.service.name))]);
   const record = toPosixRelative(deps.paths.root, credentialsRecordFile(deps.paths));
+  const copies = appCopyServers(plan);
+  const multiCopy = hasRemoteAppCopies(plan);
+  const serviceExtras = extras.filter((run) => run.steps.length > 0);
+  const copyRuns = copies
+    .map((name) => extras.find((run) => run.server === name))
+    .filter((run): run is ServerRun => run !== undefined);
   const steps =
     app === undefined
       ? ["No server runs them, so nothing else changes."]
-      : [
-          `Deploys are paused in GitHub (the repository variable OPSCREW_DEPLOY_PAUSED) until the end, once no deploy runs.`,
-          `${secretsText(input.secrets)} ${input.secrets.length === 1 ? "is" : "are"} replaced with the new values, encrypted on this computer before upload.`,
-          ...extras.map(
-            (run) =>
-              `On ${serverWords(run.server)} (rotate.sh begin): deploys held there, and ${servicesOf(run)} ${run.steps.length === 1 ? "gets its" : "get their"} new values and env files.`,
-          ),
-          `On the app's server (rotate.sh): deploys held there${app.steps.length === 0 ? "" : `, ${servicesOf(app)} changed to the new values`}, the new env files, ${switchText(plan)}, then the old values dropped there.`,
-          ...extras.map(
-            (run) => `On ${serverWords(run.server)} (rotate.sh finish): the old values dropped.`,
-          ),
-          `Deploys resume, ${record} records the rotation, and the recovery copy is refreshed.`,
-        ].map((line, i) => `${i + 1}. ${line}`);
+      : multiCopy
+        ? [
+            `Deploys are paused in GitHub (the repository variable OPSCREW_DEPLOY_PAUSED) until the end, once no deploy runs.`,
+            `${secretsText(input.secrets)} ${input.secrets.length === 1 ? "is" : "are"} replaced with the new values, encrypted on this computer before upload.`,
+            ...serviceExtras.map(
+              (run) =>
+                `On ${serverWords(run.server)} (rotate.sh begin): deploys held there, and ${servicesOf(run)} ${run.steps.length === 1 ? "gets its" : "get their"} new values and env files.`,
+            ),
+            `On the app's server (rotate.sh begin): deploys held there${app.steps.length === 0 ? "" : `, ${servicesOf(app)} changed to the new values`}, the new env files and ${switchText(plan)}.`,
+            ...copyRuns.map(
+              (run) =>
+                `On ${serverWords(run.server)} (rotate.sh ${run.steps.length > 0 ? "switch" : "begin"}): the new env files and ${switchText(plan)}.`,
+            ),
+            `On the app's server and its extra servers (rotate.sh finish): the old values dropped and deploys released.`,
+            `Deploys resume, ${record} records the rotation, and the recovery copy is refreshed.`,
+          ].map((line, i) => `${i + 1}. ${line}`)
+        : [
+            `Deploys are paused in GitHub (the repository variable OPSCREW_DEPLOY_PAUSED) until the end, once no deploy runs.`,
+            `${secretsText(input.secrets)} ${input.secrets.length === 1 ? "is" : "are"} replaced with the new values, encrypted on this computer before upload.`,
+            ...extras.map(
+              (run) =>
+                `On ${serverWords(run.server)} (rotate.sh begin): deploys held there, and ${servicesOf(run)} ${run.steps.length === 1 ? "gets its" : "get their"} new values and env files.`,
+            ),
+            `On the app's server (rotate.sh): deploys held there${app.steps.length === 0 ? "" : `, ${servicesOf(app)} changed to the new values`}, the new env files, ${switchText(plan)}, then the old values dropped there.`,
+            ...extras.map(
+              (run) => `On ${serverWords(run.server)} (rotate.sh finish): the old values dropped.`,
+            ),
+            `Deploys resume, ${record} records the rotation, and the recovery copy is refreshed.`,
+          ].map((line, i) => `${i + 1}. ${line}`);
   const consequence = appConsequence(plan, input.values.app);
   const lines = [
     ...(consequence === undefined ? [] : [consequence.line]),

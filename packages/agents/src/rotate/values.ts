@@ -202,6 +202,7 @@ export function swapAppEnv(
   values: RotationValues,
   from: ServiceValues,
   to: ServiceValues,
+  consumerServer?: string,
 ): string {
   const secret = (side: ServiceValues) => (service: PlanService, name: string) => {
     const value = side[service.name]?.[name];
@@ -209,8 +210,8 @@ export function swapAppEnv(
     return value;
   };
   const pairs = new Map<string, string>();
-  const before = serviceAppVariables(plan, secret(from));
-  const after = serviceAppVariables(plan, secret(to));
+  const before = serviceAppVariables(plan, secret(from), consumerServer);
+  const after = serviceAppVariables(plan, secret(to), consumerServer);
   for (const [name, value] of before) {
     const next = after.get(name);
     if (next !== undefined && next !== value) pairs.set(value, next);
@@ -221,6 +222,7 @@ export function swapAppEnv(
         plan,
         service,
         secretRef: (n) => secret(side)(service, n),
+        ...(consumerServer === undefined ? {} : { consumerServer }),
       });
     const a = address(from);
     const b = address(to);

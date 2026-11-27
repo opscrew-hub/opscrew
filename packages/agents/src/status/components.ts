@@ -52,9 +52,20 @@ export function componentServer(plan: DeployPlan, service: string): string {
   );
 }
 
-/** The planned components on `server`. */
+/** The planned components on `server` (including web & worker copies placed on extra servers, 033). */
 function componentsOn(plan: DeployPlan, server: string): PlannedComponent[] {
-  return plannedComponents(plan).filter((c) => componentServer(plan, c.service) === server);
+  if (server === APP_SERVER) {
+    return plannedComponents(plan).filter((c) => componentServer(plan, c.service) === APP_SERVER);
+  }
+  return [
+    ...((plan.app.servers ?? []).includes(server)
+      ? [{ service: "app", what: "the web process" }]
+      : []),
+    ...plan.processes.workers
+      .filter((worker) => worker.enabled && (worker.servers?.includes(server) ?? false))
+      .map((worker) => ({ service: worker.name, what: "the worker" })),
+    ...plannedComponents(plan).filter((c) => componentServer(plan, c.service) === server),
+  ];
 }
 
 /**
@@ -161,7 +172,9 @@ export function componentStatus(
   }));
   const planned = new Set(components.map((component) => component.service));
   const oneShot = oneShotServices(plan);
-  const expectsAppProxy = server === APP_SERVER && plan.target.provider !== "portainer";
+  const expectsAppProxy =
+    (server === APP_SERVER || (plan.app.servers?.includes(server) ?? false)) &&
+    plan.target.provider !== "portainer";
   const others = [...counts.keys()]
     .filter(
       (service) =>

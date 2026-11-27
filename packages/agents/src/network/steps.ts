@@ -1,7 +1,9 @@
 import { isIP } from "node:net";
 import type { NetworkFilterParams, NetworkStepParams } from "@opscrew/connector-ssh-host";
+import { APP_KAMAL_PROXY_SERVICE } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  appCopyServers,
   type DeployPlan,
   MONITORING_GRAFANA_PORT,
   MONITORING_PUSH_PORT,
@@ -40,7 +42,8 @@ export interface ServerNetworkFacts {
 const OPSCREW_INTERFACE = /^wg-opscrew\d+$/;
 
 /** What the network's steps read of a plan. */
-type NetworkPlan = Pick<DeployPlan, "network" | "target" | "observability" | "retarget">;
+type NetworkPlan = Pick<DeployPlan, "network" | "target" | "observability" | "retarget"> &
+  Partial<Pick<DeployPlan, "app" | "processes">>;
 
 /**
  * The plan's network and the server `server` on it, with the servers it links to: the other
@@ -85,12 +88,24 @@ export function networkFilterRules(
   const devices = () => (admitted ? network.devices.map((d) => d.address) : []);
   const deviceAddress = (name: string) =>
     admitted ? network.devices.find((d) => d.name === name)?.address : undefined;
+  const copyAddresses =
+    plan.app === undefined
+      ? []
+      : appCopyServers({ app: plan.app, processes: plan.processes })
+          .filter((name) => name !== server)
+          .map((name) => network.members.find((m) => m.name === name)?.address);
   const rules = published.map(({ service, port, dashboard }) => {
     if (dashboard === true) return { port, sources: devices() };
+    if (service === APP_KAMAL_PROXY_SERVICE) {
+      const sources = [...new Set([app, previous?.address])].filter(
+        (a): a is string => a !== undefined,
+      );
+      return { port, sources };
+    }
     const granted = network.grants
       .filter((g) => g.service === service)
       .map((g) => deviceAddress(g.device));
-    const sources = [...new Set([app, previous?.address, ...granted])].filter(
+    const sources = [...new Set([app, ...copyAddresses, previous?.address, ...granted])].filter(
       (a): a is string => a !== undefined,
     );
     return { port, sources };

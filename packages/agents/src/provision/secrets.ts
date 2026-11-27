@@ -17,6 +17,7 @@ import {
 } from "@opscrew/core";
 import {
   CHECK_SECRETS,
+  copyServerEnvSecrets,
   DEPLOY_SECRETS,
   deploySecretName,
   deploySecretNamesFor,
@@ -26,6 +27,7 @@ import {
   hasWorkerDbEnv,
   OFFSITE_ENV_SECRET,
   PORTAINER_DEPLOY_SECRETS,
+  processServices,
   RELEASE_DB_ENV,
   releaseVariables,
   serverDeploySecrets,
@@ -37,6 +39,7 @@ import {
   workerVariables,
 } from "@opscrew/iac-templates";
 import {
+  appCopyServers,
   type DeployPlan,
   EnvironmentSchema,
   environmentsOf,
@@ -60,6 +63,7 @@ import { readPendingRotation, unfinishedRotation } from "../rotate/values-pendin
 import {
   type AppEnvironment,
   assembleAppEnv,
+  copyServerAppEnv,
   dotenvLine,
   type GeneratedValues,
   hasDeployment,
@@ -429,20 +433,25 @@ export function releaseDbEnvFile(
 export function workerDbEnvFile(
   plan: DeployPlan,
   services: Readonly<Record<string, Readonly<Record<string, string>>>>,
+  consumerServer?: string,
 ): string | undefined {
-  return hasWorkerDbEnv(plan) ? dbEnvText(plan, services, workerVariables) : undefined;
+  return hasWorkerDbEnv(plan)
+    ? dbEnvText(plan, services, (p, secret) => workerVariables(p, secret, consumerServer))
+    : undefined;
 }
 
 /**
- * The database env files beside `app.env` on the app's server by file name:
- * {@link releaseDbEnvFile}'s and {@link workerDbEnvFile}'s, each when the plan has it.
+ * The database env files beside `app.env` on `consumerServer` (default `APP_SERVER`) by file name:
+ * {@link releaseDbEnvFile}'s (on `APP_SERVER` only) and {@link workerDbEnvFile}'s, each when the
+ * plan has it.
  */
 export function dbEnvFiles(
   plan: DeployPlan,
   services: Readonly<Record<string, Readonly<Record<string, string>>>>,
+  consumerServer?: string,
 ): Record<string, string> {
-  const release = releaseDbEnvFile(plan, services);
-  const workers = workerDbEnvFile(plan, services);
+  const release = consumerServer === undefined ? releaseDbEnvFile(plan, services) : undefined;
+  const workers = workerDbEnvFile(plan, services, consumerServer);
   return {
     ...(release === undefined ? {} : { [RELEASE_DB_ENV.file]: release }),
     ...(workers === undefined ? {} : { [WORKER_DB_ENV.file]: workers }),
@@ -498,6 +507,9 @@ export function deploySecretNames(plan: DeployPlan): string[] {
             ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
             ...(plan.servers ?? []).flatMap((server) =>
               Object.values(serverDeploySecrets(server.name)),
+            ),
+            ...appCopyServers(plan).flatMap((server) =>
+              Object.values(copyServerEnvSecrets(server)),
             ),
             ...(plan.target.provider === "own" ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
           ];
@@ -970,6 +982,19 @@ export function deploySecrets(input: {
 }): Record<string, string> {
   const release = releaseDbEnvFile(input.plan, input.environment.values.services);
   const workers = workerDbEnvFile(input.plan, input.environment.values.services);
+  const copyEnvs = Object.fromEntries(
+    appCopyServers(input.plan).flatMap((server) => {
+      const secrets = copyServerEnvSecrets(server);
+      const copyWorkerDb =
+        hasWorkerDbEnv(input.plan) && processServices(input.plan, server).length > 0
+          ? workerDbEnvFile(input.plan, input.environment.values.services, server)
+          : undefined;
+      return [
+        [secrets.appEnv, copyServerAppEnv(input.plan, input.environment, server)],
+        ...(copyWorkerDb === undefined ? [] : [[secrets.workerDbEnv, copyWorkerDb]]),
+      ];
+    }),
+  );
   return {
     [DEPLOY_SECRETS.host]: input.host,
     [DEPLOY_SECRETS.sshKey]: input.privateKey,
@@ -986,6 +1011,7 @@ export function deploySecrets(input: {
     [DEPLOY_SECRETS.appEnv]: input.environment.appEnv,
     ...(release === undefined ? {} : { [RELEASE_DB_ENV.secret]: release }),
     ...(workers === undefined ? {} : { [WORKER_DB_ENV.secret]: workers }),
+    ...copyEnvs,
     ...serviceEnvSecrets(input.plan, input.environment),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
     [DEPLOY_SECRETS.buildSecrets]: input.environment.buildSecrets,
