@@ -6,8 +6,13 @@ import {
   MANAGED_CLOUD_CONTRACT_VERSION,
   type ManagedCloudProviderDefinition,
 } from "@opscrew/contracts";
+import { AwsTargetSchema, type ProjectFacts, type Requirements } from "@opscrew/plan-schema";
 import { createAwsConnector } from "./connector";
+import { designAwsTarget } from "./design";
+import { renderAwsHcl } from "./hcl";
+import { applyAwsOverrides, parseAwsSetFlag } from "./overrides";
 import { AWS_REGIONS } from "./pricing";
+import { renderAwsDeployWorkflow } from "./workflow";
 
 export { type AwsCredentials, createAwsConnector, signAwsV4Request } from "./connector";
 export {
@@ -66,6 +71,73 @@ export const AWS_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
   regions: AWS_REGIONS,
   presets: ["lean", "balanced", "production-ha"],
   createConnector: createAwsConnector,
+  designTarget: (input) => {
+    const res = designAwsTarget({
+      facts: input.facts as ProjectFacts,
+      requirements: input.requirements as Requirements,
+      ...(input.preset === undefined ? {} : { preset: input.preset }),
+      ...(input.pins === undefined ? {} : { pins: input.pins as Record<string, unknown> }),
+    });
+    return {
+      target: res.target,
+      estimatedMonthlyUsd: res.totalMonthlyUsd,
+      costLines: Object.entries(res.target.components).map(([component, c]) => ({
+        component,
+        label: c.service,
+        monthlyUsd: c.monthlyCostUsd,
+      })),
+      costTrapWarnings: res.warnings,
+      notes: Object.entries(res.target.components).map(
+        ([component, c]) => `${component}: ${c.why}`,
+      ),
+    };
+  },
+  applyOverrides: ({ target, setFlags }) => {
+    const parsedTarget = AwsTargetSchema.parse(target);
+    const entries = setFlags.map(parseAwsSetFlag);
+    const result = applyAwsOverrides(parsedTarget, setFlags);
+    return {
+      target: result.target,
+      beforeMonthlyUsd: result.beforeMonthlyUsd,
+      afterMonthlyUsd: result.afterMonthlyUsd,
+      deltaMonthlyUsd: result.deltaMonthlyUsd,
+      applied: entries.map((e) => {
+        const [component = e.path, ...rest] = e.path.split(".");
+        return {
+          component,
+          field: rest.join("."),
+          value: e.rawValue,
+        };
+      }),
+      warnings: result.warnings,
+    };
+  },
+  renderHcl: (input) => {
+    const [owner = "owner", repo = input.appName] = input.githubRepo.split("/");
+    return renderAwsHcl({
+      appName: input.appName,
+      environment: input.environment,
+      infraDir: ".",
+      target: AwsTargetSchema.parse(input.target),
+      ...(input.domain === undefined ? {} : { domain: input.domain }),
+      github: {
+        owner,
+        repo,
+        ...(input.githubOrgId === undefined ? {} : { ownerId: Number(input.githubOrgId) }),
+        ...(input.githubRepoId === undefined ? {} : { repoId: Number(input.githubRepoId) }),
+        ...(input.branch === undefined ? {} : { branch: input.branch }),
+      },
+      ...(input.endpointUrl === undefined ? {} : { endpointUrl: input.endpointUrl }),
+    });
+  },
+  renderWorkflow: (input) =>
+    renderAwsDeployWorkflow({
+      appName: input.appName,
+      environment: input.environment,
+      workflowPath: `.github/workflows/opscrew-deploy${input.environment === "prod" ? "" : `-${input.environment}`}.yml`,
+      target: AwsTargetSchema.parse(input.target),
+      branch: input.branch ?? "main",
+    }),
 };
 
 export default AWS_MANAGED_PROVIDER;

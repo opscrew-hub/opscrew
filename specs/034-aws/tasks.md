@@ -21,9 +21,9 @@
 
 ## Wave 3 — Core Phase Wiring, CLI, MCP, Companion Plugin & Guide
 
-- [ ] **T3408 (lead):** Wire `interview`, `design` (including `--set <component>.<field>=<value>`), and `provision` (HCL render, AWS SecOps gate, hash-bound apply, out-of-band secret population, Cloudflare ACM DNS-01 `proxied = false` records) in `packages/agents/src/` with unit tests.
-- [ ] **T3409 (lead):** Wire `status`, `logs` (CloudWatch), `verify`, `drift`, `snapshot`/`restore`/restore drills, `rotate`, `advise`, `destroy`, and `retarget --to aws` (`ec2-compose`) in `packages/agents/src/` with unit tests.
-- [ ] **T3410 (contributor — Slice C):** Add `opscrew plugin list|add|remove` and `design --set` CLI commands in `packages/cli/src/commands/`, expose AWS/plugin support in `packages/mcp-server/src/tools/`, scaffold companion Claude Code plugin `plugin-aws/` in `.claude-plugin/marketplace.json`, and author `docs/guide/aws.md` (linked from `docs/guide/index.md`) with CLI & MCP tests.
+- [x] **T3408 (lead):** Wire `interview`, `design` (including `--set <component>.<field>=<value>`), and `provision` (HCL render, AWS SecOps gate, hash-bound apply, out-of-band secret population, Cloudflare ACM DNS-01 `proxied = false` records) in `packages/agents/src/` with unit tests.
+- [x] **T3409 (lead):** Wire `status`, `logs` (CloudWatch), `verify`, `drift`, `snapshot`/`restore`/restore drills, `rotate`, `advise`, `destroy`, and `retarget --to aws` (`ec2-compose`) in `packages/agents/src/` with unit tests.
+- [x] **T3410 (lead):** Add `opscrew plugin list|add|remove` and `design --set` CLI commands in `packages/cli/src/commands/`, expose AWS/plugin support in `packages/mcp-server/src/tools/`, scaffold companion Claude Code plugin `plugin-aws/` in `.claude-plugin/marketplace.json`, and author `docs/guide/aws.md` (linked from `docs/guide/index.md`) with CLI & MCP tests.
 
 ## Wave 4 — Real `floci` Emulator Verification, Opus 5.5 Review & Full Gate (Lead)
 

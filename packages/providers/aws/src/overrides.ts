@@ -102,6 +102,13 @@ export function applyAwsOverrides(
     if (parts.length === 1 && (head === "region" || head === "preset" || head === "compute")) {
       const prev = draft[head];
       (draft as unknown as Record<string, unknown>)[head] = entry.value;
+      if (
+        head === "compute" &&
+        typeof entry.value === "string" &&
+        draft.components.compute !== undefined
+      ) {
+        draft.components.compute.service = entry.value;
+      }
       changes.push(`${head}: ${String(prev)} → ${String(entry.value)}`);
       continue;
     }
@@ -139,6 +146,9 @@ export function applyAwsOverrides(
       if (field === "service" && parts.length === 2 && typeof entry.value === "string") {
         const prev = comp.service;
         comp.service = entry.value;
+        if (head === "compute") {
+          (draft as unknown as Record<string, unknown>).compute = entry.value;
+        }
         comp.monthlyCostUsd = repriceComponent(
           head,
           comp.service,

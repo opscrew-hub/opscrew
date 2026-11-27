@@ -1,4 +1,4 @@
-import type { VpsProviderId } from "@opscrew/contracts";
+import type { ManagedCloudProviderId, VpsProviderId } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
 import {
   type DeployProvider,
@@ -57,6 +57,11 @@ export interface InterviewContext {
    * `OPSCREW_SFTP_*` variables), which the provider question then offers.
    */
   hosting?: boolean;
+  /**
+   * Installed or configured optional managed-cloud provider plugins (e.g. `["aws"]`, ADR 0040)
+   * offered by the provider question.
+   */
+  managedProviders?: readonly ManagedCloudProviderId[];
 }
 
 /** The provider question's hints for the server-less targets. */
@@ -198,6 +203,15 @@ export function buildQuestions(
           label: texts.interview.label,
           hint: texts.interview.hint,
         })),
+        ...(context.managedProviders?.includes("aws") === true
+          ? [
+              {
+                value: "aws",
+                label: "Amazon Web Services (AWS)",
+                hint: "managed AWS services (Lambda Web, Lightsail, ECS Fargate, EC2 + Compose, RDS, S3/CloudFront); uses the optional @opscrew/provider-aws plugin (`opscrew plugin add aws`)",
+              },
+            ]
+          : []),
         ...(context.serverless ?? []).map((id) => ({
           value: id,
           label: providerProfile(id).displayName,

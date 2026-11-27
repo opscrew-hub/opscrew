@@ -17,6 +17,7 @@ import * as interview from "./interview";
 import * as localhost from "./localhost";
 import * as logs from "./logs";
 import * as mcp from "./mcp";
+import * as plugin from "./plugin";
 import * as portainer from "./portainer";
 import * as preview from "./preview";
 import * as promote from "./promote";
@@ -76,6 +77,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   runner,
   rotate,
   secrets,
+  plugin,
   providers,
   mcp,
 ];

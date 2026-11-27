@@ -16,6 +16,7 @@ import { addHostKeyOption, checkApproveFlags } from "./provision";
 
 interface DesignFlags {
   option?: string;
+  set?: string[];
   hostKey?: string;
   /** `--app <key>`: the repository's app. */
   app?: string;
@@ -37,7 +38,13 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("design")
     .description("Design the production architecture and estimate its monthly cost")
-    .option("--option <id>", "Choose this option without asking (ids are listed by the command)");
+    .option("--option <id>", "Choose this option without asking (ids are listed by the command)")
+    .option(
+      "--set <override>",
+      "Override a managed-cloud component setting (e.g. compute.service=ec2-compose); repeatable",
+      (value: string, previous: string[]) => [...previous, value],
+      [] as string[],
+    );
   addEnvOption(command);
   addHostKeyOption(command).action(async (flags: DesignFlags) => {
     checkApproveFlags("design", flags);
@@ -61,8 +68,10 @@ export function register(program: Command, ctx: CliContext): void {
     }
     const prompts = promptsOf(ctx);
     const extraServers = servicesOf(ctx).provision?.own;
+    const setFlags = flags.set?.map((s) => s.trim()).filter((s) => s.length > 0);
     const result = await runDesign(deps, {
       ...(optionId === undefined ? {} : { optionId }),
+      ...(setFlags !== undefined && setFlags.length > 0 ? { setFlags } : {}),
       ...(ownServer === undefined ? {} : { ownServer }),
       // An extra server of the user's that this computer has no login for: asked once.
       ...(ctx.isInteractive

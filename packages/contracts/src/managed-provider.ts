@@ -185,6 +185,58 @@ export interface ManagedCloudProviderDefinition {
   readonly regions: readonly ManagedCloudRegion[];
   readonly presets: readonly ("lean" | "balanced" | "production-ha")[];
   readonly createConnector: (deps: ManagedCloudConnectorDeps) => ManagedCloudConnector;
+  /** Pure target designer; core validates the returned `target` with its own zod schema. */
+  readonly designTarget?: (input: {
+    readonly facts: unknown;
+    readonly requirements: unknown;
+    readonly preset?: "lean" | "balanced" | "production-ha";
+    readonly pins?: unknown;
+  }) => {
+    readonly target: unknown;
+    readonly estimatedMonthlyUsd: number;
+    readonly costLines: readonly ManagedCloudCostLine[];
+    readonly costTrapWarnings: readonly string[];
+    readonly notes: readonly string[];
+  };
+  /** Pure `--set` override applier; core validates the returned `target` with its own zod schema. */
+  readonly applyOverrides?: (input: {
+    readonly target: unknown;
+    readonly setFlags: readonly string[];
+  }) => {
+    readonly target: unknown;
+    readonly beforeMonthlyUsd: number;
+    readonly afterMonthlyUsd: number;
+    readonly deltaMonthlyUsd: number;
+    readonly applied: readonly {
+      readonly component: string;
+      readonly field: string;
+      readonly value: string;
+    }[];
+    readonly warnings: readonly string[];
+  };
+  /** Pure vendored OpenTofu/Terraform HCL renderer. */
+  readonly renderHcl?: (input: {
+    readonly appName: string;
+    readonly environment: string;
+    readonly target: unknown;
+    readonly domain?: string;
+    readonly dnsProvider?: string;
+    readonly githubRepo: string;
+    readonly githubOrgId?: string;
+    readonly githubRepoId?: string;
+    readonly branch?: string;
+    readonly containerPort?: number;
+    readonly endpointUrl?: string;
+  }) => readonly ManagedCloudRenderedFile[];
+  /** Pure keyless OIDC GitHub Actions deploy workflow renderer. */
+  readonly renderWorkflow?: (input: {
+    readonly appName: string;
+    readonly environment: string;
+    readonly target: unknown;
+    readonly branch?: string;
+    readonly imageRegistry?: "ghcr" | "ecr";
+    readonly roleArnVar?: string;
+  }) => ManagedCloudRenderedFile;
 }
 
 /** Provenance policy enforced by core when verifying an official plugin package from npm. */

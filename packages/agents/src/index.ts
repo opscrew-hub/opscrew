@@ -3,6 +3,7 @@ export * from "./addons";
 export * from "./advise";
 export * from "./analyze";
 export * from "./apps";
+export * from "./aws";
 export * from "./check";
 export * from "./cloudflare-move";
 export * from "./context";

@@ -6,10 +6,11 @@
  * signatures & provenance BEFORE loading any code, and swaps atomically from a staging folder so
  * a failed verification never leaves a partial or untrusted install behind.
  */
+import { existsSync } from "node:fs";
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   type CommandRunner,
   type InstalledPluginRecord,
@@ -404,6 +405,16 @@ export async function loadManagedProviderPlugin(
       return validateManagedProviderDefinition(loaded, spec.id);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ERR_MODULE_NOT_FOUND") throw error;
+    }
+    const workspaceEntry = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../providers",
+      spec.id,
+      "src/index.ts",
+    );
+    if (existsSync(workspaceEntry)) {
+      const loaded = await importModule(pathToFileURL(workspaceEntry).href);
+      return validateManagedProviderDefinition(loaded, spec.id);
     }
   }
 

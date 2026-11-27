@@ -9,6 +9,7 @@ an app yet.
 - [Deploy to DigitalOcean](digitalocean.md)
 - [Deploy to Contabo](contabo.md)
 - [Deploy to OVHcloud](ovhcloud.md)
+- [Deploy to Amazon Web Services (AWS)](aws.md)
 - [Deploy to a server you already have](own-server.md)
 - [Host your app at home](home-hosting.md)
 - [Deploy to a Portainer you already run](portainer-target.md)

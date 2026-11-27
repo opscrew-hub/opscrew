@@ -391,7 +391,10 @@ describe("provider question", () => {
       ).provider,
     ).toBe("digitalocean");
     expect(() =>
-      answersToRequirements({ ...BASE_ANSWERS, provider: "aws" }, { now, facts: facts() }),
+      answersToRequirements(
+        { ...BASE_ANSWERS, provider: "unknown-cloud" },
+        { now, facts: facts() },
+      ),
     ).toThrowError(
       expect.objectContaining({
         code: "INVALID_INPUT",

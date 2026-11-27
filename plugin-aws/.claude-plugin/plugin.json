@@ -1,0 +1,13 @@
+{
+  "name": "opscrew-aws",
+  "version": "0.1.0",
+  "description": "AWS managed-services guidance and skills for OpsCrew (Lambda Web, Lightsail, ECS Fargate, EC2 + Compose, RDS, S3/CloudFront, keyless GitHub OIDC).",
+  "dependencies": ["opscrew"],
+  "author": {
+    "name": "Mihailo Popović"
+  },
+  "homepage": "https://opscrew.dev",
+  "repository": "https://github.com/opscrew-hub/opscrew",
+  "license": "Apache-2.0",
+  "keywords": ["opscrew", "aws", "devops", "opentofu", "terraform", "ecs", "lambda", "rds", "oidc"]
+}

@@ -50,6 +50,7 @@ import { cloudProvider } from "@opscrew/providers";
 import { appCandidatesText } from "../analyze/summary";
 import { appFlag } from "../apps/choice";
 import { requireOnePagesSite, requireUniqueNames } from "../apps/names";
+import { runAwsDesign } from "../aws";
 import { type CheckRepositoryApi, checkDesignText, readCheckRepository } from "../check/design";
 import {
   repositoryCheckSettings,
@@ -215,6 +216,8 @@ export interface RunDesignOptions extends PlacementOptions {
   choose?: (options: readonly DesignOption[]) => Promise<string>;
   /** Option id chosen up front (`opscrew design --option <id>`). */
   optionId?: string;
+  /** Repeatable `--set <component>.<field>=<value>` overrides for managed-cloud targets (e.g. AWS). */
+  setFlags?: readonly string[];
   /**
    * Catalogue override (tests, MCP). Default: the requested provider's live catalogue when its
    * token works, else its dated static price list.
@@ -1031,6 +1034,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const warn = warner(deps, warnings);
 
   const inputs = await readInputs(deps);
+  if (inputs.requirements.provider === "aws") {
+    const awsRes = await runAwsDesign(deps, {
+      facts: inputs.facts,
+      requirements: inputs.requirements,
+      ...(options.optionId === undefined ? {} : { optionId: options.optionId }),
+      ...(options.choose === undefined ? {} : { choose: options.choose }),
+      ...(options.setFlags === undefined ? {} : { setFlags: options.setFlags }),
+      ...(options.branch === undefined ? {} : { branch: options.branch }),
+    });
+    return {
+      options: awsRes.options,
+      chosen: awsRes.chosen,
+      plan: awsRes.plan,
+      priceSource: awsRes.priceSource,
+      warnings: awsRes.warnings,
+      lines: awsRes.lines,
+    };
+  }
   const name = paths.environment;
   const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
   // The plan without its placement, which design completes from the user's edits below.
