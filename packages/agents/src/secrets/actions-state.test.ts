@@ -1,14 +1,20 @@
-import type { RunReportSecret, RunReportSecretPlace, SealedSecretSink } from "@opscrew/contracts";
+import type {
+  RunReportSecret,
+  RunReportSecretDelete,
+  RunReportSecretPlace,
+  SealedSecretSink,
+} from "@opscrew/contracts";
 import { ageRecipientOf, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it, vi } from "vitest";
-import { setSecretAt } from "../provision/secrets";
+import { deleteSecretAt, setSecretAt } from "../provision/secrets";
 import { provisionedFiles, recoveryWorld, writeLocal } from "./__fixtures__/world";
 import { refreshRecoveryCopy } from "./copy";
 
 function fakeSink(redactor: Pick<Redactor, "addLiteral">) {
   const plainByName = new Map<string, string>();
   const sealed: RunReportSecret[] = [];
+  const deleted: RunReportSecretDelete[] = [];
   const sink: SealedSecretSink = {
     async seal(name: string, value: string, place: RunReportSecretPlace): Promise<RunReportSecret> {
       redactor.addLiteral(value, "sealed-secret");
@@ -22,7 +28,11 @@ function fakeSink(redactor: Pick<Redactor, "addLiteral">) {
       sealed.push(entry);
       return entry;
     },
+    recordDelete(name: string, place: RunReportSecretPlace): void {
+      deleted.push({ name, place });
+    },
     entries: () => [...sealed],
+    deletedEntries: () => [...deleted],
   };
   return { sink, plainByName };
 }
@@ -87,5 +97,25 @@ describe("Feature 041: sealed secrets & first-run recovery key sealing", () => {
     expect(identity.startsWith("AGE-SECRET-KEY-1")).toBe(true);
     expect(ageRecipientOf(identity)).toBe(result.recipients[0]);
     expect(world.deps.redactor.redact(`leaked ${identity}`)).not.toContain(identity);
+  });
+
+  it("routes deleteSecretAt through deps.sealedSecrets.recordDelete without calling GitHub delete APIs", async () => {
+    const redactor = new Redactor();
+    const { sink } = fakeSink(redactor);
+    const deleteActionsSecret = vi.fn();
+    const deleteEnvironmentSecret = vi.fn();
+
+    await deleteSecretAt(
+      { audit: { append: async () => {} }, sealedSecrets: sink },
+      { api: { deleteActionsSecret, deleteEnvironmentSecret }, owner: "acme", repo: "app" },
+      { name: "OPSCREW_OLD_ENV", environment: "production" },
+      "provision",
+    );
+
+    expect(deleteActionsSecret).not.toHaveBeenCalled();
+    expect(deleteEnvironmentSecret).not.toHaveBeenCalled();
+    expect(sink.deletedEntries()).toEqual([
+      { name: "OPSCREW_OLD_ENV", place: { kind: "environment", environment: "production" } },
+    ]);
   });
 });

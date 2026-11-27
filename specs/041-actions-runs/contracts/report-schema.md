@@ -21,8 +21,9 @@ The dashboard dispatches `opscrew-cloud.yml` via `POST /repos/{owner}/{repo}/act
 | `secrets_key` | No | Non-secret base64 Curve25519 repository public key. |
 | `env_secrets_key_id` | No | Non-secret GitHub Actions environment public key ID (when targeting a GitHub Environment). |
 | `env_secrets_key` | No | Non-secret base64 Curve25519 environment public key. |
+| `env_secrets_name` | No | Required when `env_secrets_key*` is set: exact GitHub Environment name the public key belongs to. |
 
-The workflow sets `OPSCREW_ACTIONS_RUN=1`, hydrates `~/.opscrew` when `secrets.OPSCREW_RECOVERY_KEY` is set (`opscrew secrets restore --from-env --on-conflict use-copy`), runs `opscrew --report opscrew-report.json ...`, and uploads `opscrew-report.json` as an Actions artifact (`name: opscrew-report`, `retention-days: 7`) with `if: always()`.
+The workflow sets `OPSCREW_ACTIONS_RUN=1`, hydrates `~/.opscrew` when `secrets.OPSCREW_RECOVERY_KEY` is set (`opscrew secrets restore --from-env --use-copy`), runs `opscrew --report opscrew-report.json ...`, and uploads `opscrew-report.json` as an Actions artifact (`name: opscrew-report`, `retention-days: 7`) with `if: always()`.
 
 ---
 
@@ -78,6 +79,7 @@ The workflow sets `OPSCREW_ACTIONS_RUN=1`, hydrates `~/.opscrew` when `secrets.O
       "place": { "kind": "environment", "environment": "production" }
     }
   ],
+  "deletedSecrets": [],
   "costs": {
     "totalUsd": 0.0215,
     "byModel": [
@@ -114,14 +116,19 @@ The workflow sets `OPSCREW_ACTIONS_RUN=1`, hydrates `~/.opscrew` when `secrets.O
   - `"needs-approval"` — plan(s) computed and awaiting `--approve <hash>` (and `--confirm <name>` if any plan has `needsConfirm: true`).
   - `"failed"` — command stopped with an error; `failure` is populated.
 - `plans[]`: every `ApprovalRequest` encountered during the run, in order. `needsConfirm` is `true` iff `confirmPhrase !== undefined` (or `allowDestroy === true`).
-- `secrets[]`: sealed-box ciphertexts only (`libsodium` `crypto_box_seal`, original base64). `place` is `{ kind: "repo" }` or `{ kind: "environment", environment: "<github-env-name>" }`. The dashboard writes each entry via GitHub's `PUT .../actions/secrets/{name}` with `{ encrypted_value, key_id }`.
+- `secrets[]`: sealed-box ciphertexts only (`libsodium` `crypto_box_seal`, original base64). `place` is `{ kind: "repo" }` or `{ kind: "environment", environment: "<github-env-name>" }`. The dashboard writes each entry via GitHub's `PUT .../actions/secrets/{name}` with `{ encrypted_value, key_id }` **only when `status === "ok"`** (never on `"needs-approval"` or `"failed"`).
+- `deletedSecrets[]`: secret names and places to remove via GitHub's `DELETE .../actions/secrets/{name}` when `status === "ok"` (for example after `values unset` or `destroy`).
 - `costs`: always present (zeroed `{ totalUsd: 0, byModel: [], entries: [] }` when no model ran).
 - `failure` (present when `status === "failed"`):
-  - `code`: OpsCrew `ErrorCode` or `"CLI_USAGE"` / `"UNEXPECTED"`.
+  - `code`: OpsCrew `ErrorCode`, `"CLI_USAGE"`, `"REFUSED"` (command exited 1 via `CliExit`), `"FAILED"` (command exited non-zero via `CliExit`), or `"UNEXPECTED"`.
   - `step`: phase or command name where failure occurred.
   - `firstLine`: single-line redacted error message (never multi-line stack traces).
   - `hint`: optional redacted plain-English recovery instruction.
 - `nextSteps[]`: plain-English, redacted next-action lines for the user/dashboard.
+
+### Known limit: staged rotation values across ephemeral runners
+
+Rotations that stage a random next value locally before approval (such as add-on or Portainer credential rotations) bind their plan hash to that staged value. Running Run 1 and Run 2 on two separate ephemeral runners produces a different staged value and hash unless both runs share the same self-hosted runner workspace.
 
 ---
 

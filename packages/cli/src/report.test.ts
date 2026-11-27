@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { testPlan } from "@opscrew/agents/testing";
 import {
   CostLedger,
   OpsCrewError,
@@ -9,11 +10,12 @@ import {
   resolveProjectPaths,
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import sodium from "libsodium-wrappers";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "./deps";
 import { main } from "./program";
-import { ReportCollector } from "./report";
+import { checkActionsPlanFile, ReportCollector } from "./report";
 import { createTestContext } from "./test-context";
 
 async function generateKeyPair() {
@@ -254,5 +256,92 @@ describe("CLI --report, sealed secrets, and Actions guard (Feature 041)", () => 
     expect(raw).not.toContain(fakeAge);
     expect(ctx.output).not.toContain(fakeAge);
     expect(ctx.errors).not.toContain(fakeAge);
+  });
+
+  it("refuses sealed secret keys when --report is not set so secrets cannot be silently lost", async () => {
+    const dir = await tempDir();
+    const kp = await generateKeyPair();
+    const ctx = createTestContext({ cwd: dir });
+    const code = await main(
+      ["node", "opscrew", "--secrets-key-id", "k1", "--secrets-key", kp.publicKey, "providers"],
+      ctx,
+    );
+    expect(code).toBe(2);
+    expect(ctx.errors).toContain("require --report");
+  });
+
+  it("refuses plans targeting localhost or home hosting when OPSCREW_ACTIONS_RUN=1", async () => {
+    const dir = await tempDir();
+    const reportFile = path.join(dir, "report.json");
+    const base = testPlan();
+    const localhostPlan = DeployPlanSchema.parse({
+      ...base,
+      target: {
+        provider: "localhost",
+        mode: "local-compose",
+        arch: "amd64",
+        ports: { https: 443, http: 80 },
+        image: "local-build",
+        edge: "caddy",
+      },
+      dns: { provider: "none", proxied: false },
+      cost: {
+        monthly: { amount: 0, currency: "EUR" },
+        breakdown: [],
+        pricesIncludeVat: false,
+        source: "static",
+        asOf: "2026-06-15T00:00:00.000Z",
+      },
+    });
+    await mkdir(path.join(dir, "opscrew"), { recursive: true });
+    await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), localhostPlan);
+    const ctx = createTestContext({ cwd: dir, env: { OPSCREW_ACTIONS_RUN: "1" } });
+    const code = await main(["node", "opscrew", "--report", reportFile, "values", "list"], ctx);
+    expect(code).toBe(1);
+    const rep = RunReportSchema.parse(JSON.parse(await readFile(reportFile, "utf8")));
+    expect(rep.status).toBe("failed");
+    expect(rep.failure?.code).toBe("PHASE_PRECONDITION");
+    expect(rep.failure?.firstLine).toContain("localhost");
+
+    const homePlanFile = path.join(dir, "opscrew", "plan-home.yaml");
+    await writeFile(
+      homePlanFile,
+      "schemaVersion: 1\ntarget:\n  provider: own\n  home:\n    ipv4: true\n",
+    );
+    expect(() => checkActionsPlanFile(homePlanFile, { OPSCREW_ACTIONS_RUN: "1" })).toThrow(
+      /home server/,
+    );
+  });
+
+  it("ignores corrupt pre-existing lines in costs.jsonl when computing per-run AI cost delta", async () => {
+    const dir = await tempDir();
+    const home = path.join(dir, "home");
+    const reportFile = path.join(dir, "report.json");
+    const paths = resolveProjectPaths(dir, { env: { OPSCREW_HOME: home } });
+    await mkdir(paths.stateDir, { recursive: true });
+    await writeFile(
+      paths.files.costs,
+      `${JSON.stringify({ at: "2026-11-27T08:00:00Z", phase: "analyze", costUsd: 0.5 })}\n{broken-line\n`,
+    );
+
+    const collector = new ReportCollector({
+      filePath: reportFile,
+      redactor: new Redactor(),
+      version: "0.2.13-test",
+    });
+    collector.setOp("analyze");
+    collector.attachCosts(paths.files.costs);
+
+    const ledger = new CostLedger(paths.files.costs);
+    await ledger.append({
+      at: "2026-11-27T09:00:00Z",
+      phase: "analyze",
+      model: "claude-sonnet-4-6",
+      costUsd: 0.02,
+    });
+
+    const rep = await collector.finalize({ exitCode: 0 });
+    expect(rep?.costs.entries).toHaveLength(1);
+    expect(rep?.costs.totalUsd).toBe(0.02);
   });
 });

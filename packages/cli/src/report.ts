@@ -17,6 +17,7 @@ import {
 } from "@opscrew/contracts";
 import {
   CostLedger,
+  countValidCostEntriesSync,
   firstLineOf,
   isUserFacingError,
   OpsCrewError,
@@ -26,6 +27,7 @@ import {
   writeRunReport,
 } from "@opscrew/core";
 import { CommanderError } from "commander";
+import { parse as parseYaml } from "yaml";
 import { CliExit } from "./exit";
 import type { PlannedHash } from "./ui/deploy";
 
@@ -80,6 +82,46 @@ export function checkActionsAllowed(op: string, env: Record<string, string | und
   }
 }
 
+/**
+ * Refuses `localhost` and home-hosting (`target.home`) plans when running inside GitHub Actions
+ * (`OPSCREW_ACTIONS_RUN=1`), per FR-4108. Silently skips if the plan file does not exist yet.
+ */
+export function checkActionsPlanFile(
+  planFilePath: string,
+  env: Record<string, string | undefined>,
+): void {
+  if (!isActionsRun(env)) return;
+  let raw: string;
+  try {
+    raw = readFileSync(planFilePath, "utf8");
+  } catch {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(raw);
+  } catch {
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null) return;
+  const target = (parsed as { target?: { provider?: unknown; home?: unknown } }).target;
+  if (typeof target !== "object" || target === null) return;
+  if (target.provider === "localhost") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "Plans targeting `localhost` run on your own computer and cannot run in GitHub Actions.",
+      { hint: "Run this command locally on your computer instead." },
+    );
+  }
+  if (target.provider === "own" && target.home !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "Plans targeting a home server (`target.home`) require local network access and cannot run in GitHub Actions.",
+      { hint: "Run this command locally on your computer instead." },
+    );
+  }
+}
+
 /** Resolves `--report <path>` or `OPSCREW_REPORT_PATH` against `cwd`. */
 export function resolveReportPath(
   cwd: string,
@@ -120,23 +162,13 @@ export function resolveSealedTargets(
     ...(hasEnv
       ? {
           environment: {
-            ...(envName ? { name: envName } : {}),
+            name: envName ?? "",
             keyId: envKeyId ?? "",
             publicKey: envKey ?? "",
           },
         }
       : {}),
   };
-}
-
-/** Counts valid non-empty JSONL lines currently present in a cost ledger file (0 if missing). */
-function countExistingLines(filePath: string): number {
-  try {
-    const raw = readFileSync(filePath, "utf8");
-    return raw.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
-  } catch {
-    return 0;
-  }
 }
 
 const APPROVAL_WAIT_CODES = new Set([
@@ -201,7 +233,7 @@ export class ReportCollector {
   attachCosts(costsFile: string): void {
     if (this.costsFile !== undefined) return;
     this.costsFile = costsFile;
-    this.initialCostEntries = countExistingLines(costsFile);
+    this.initialCostEntries = countValidCostEntriesSync(costsFile);
   }
 
   setSummary(text: string): void {
@@ -280,13 +312,24 @@ export class ReportCollector {
     this.addNextStep(`Review the plan above and run: ${approveCommand}`);
   }
 
-  /** Wraps `handler` so every approval request and decision is recorded in this report. */
+  /** Wraps `handler` so every approval request and decision (or thrown error) is recorded. */
   wrapApprovalHandler(handler: ApprovalHandler): ApprovalHandler {
     return {
       request: async (request: ApprovalRequest): Promise<ApprovalDecision> => {
-        const decision = await handler.request(request);
-        this.recordApproval(request, decision);
-        return decision;
+        try {
+          const decision = await handler.request(request);
+          this.recordApproval(request, decision);
+          return decision;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.recordApproval(request, {
+            approved: false,
+            approver: "error",
+            decidedAt: this.clock.now().toISOString(),
+            reason: firstLineOf(message, this.redactor),
+          });
+          throw error;
+        }
       },
     };
   }
@@ -335,6 +378,7 @@ export class ReportCollector {
       plans: this.plans,
       changes: this.changes,
       secrets: [...(this.sealedSecrets?.entries() ?? [])],
+      deletedSecrets: [...(this.sealedSecrets?.deletedEntries() ?? [])],
       costs,
       ...(this.pullRequest === undefined ? {} : { pullRequest: this.pullRequest }),
       ...(this.verify === undefined ? {} : { verify: this.verify }),

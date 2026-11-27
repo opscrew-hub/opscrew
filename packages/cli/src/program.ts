@@ -1,4 +1,5 @@
 import path from "node:path";
+import { OpsCrewError } from "@opscrew/core";
 import { Command, CommanderError } from "commander";
 import { description } from "../package.json";
 import { ALL_COMMANDS } from "./commands/index";
@@ -70,9 +71,16 @@ export function createProgram(ctx: CliContext): Command {
       }
       const sealedTargets = resolveSealedTargets(opts, ctx.env);
       if (sealedTargets !== undefined) {
+        if (reportPath === undefined) {
+          throw new OpsCrewError(
+            "INVALID_INPUT",
+            "Sealed secret keys (--secrets-key-id / --secrets-key) require --report <path> (or OPSCREW_REPORT_PATH) so sealed secrets are not silently discarded.",
+            { hint: "Pass --report <path> alongside the sealed secret key flags and run again." },
+          );
+        }
         const clock = servicesOf(ctx).clock;
         ctx.report = new ReportCollector({
-          ...(reportPath === undefined ? {} : { filePath: reportPath }),
+          filePath: reportPath,
           sealedTargets,
           ...(clock === undefined ? {} : { clock }),
           redactor: ctx.redactor,
@@ -126,7 +134,12 @@ export async function runProgram(
     }
   }
   if (ctx.report !== undefined) {
-    await ctx.report.finalize({ exitCode, ...(caught === undefined ? {} : { error: caught }) });
+    try {
+      await ctx.report.finalize({ exitCode, ...(caught === undefined ? {} : { error: caught }) });
+    } catch (reportError) {
+      printError(ctx, reportError, { unexpected: "Could not write run report" });
+      return ERROR_EXIT_CODE;
+    }
   }
   return exitCode;
 }

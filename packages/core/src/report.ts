@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
+  APPROVAL_KINDS,
   PHASES,
   RUN_REPORT_SCHEMA_VERSION,
   type RunReport,
@@ -10,31 +12,13 @@ import {
   type RunReportModelCost,
   type RunReportPlan,
   type RunReportSecret,
+  type RunReportSecretDelete,
   SEVERITIES,
 } from "@opscrew/contracts";
 import { z } from "zod";
 import { OpsCrewError } from "./errors";
 import type { Redactor } from "./redact";
 import { type CostEntry, writeFileAtomic } from "./state";
-
-const APPROVAL_KINDS = [
-  "iac-apply",
-  "repo-write",
-  "git-push",
-  "pull-request",
-  "github-secrets",
-  "remote-exec",
-  "tool-call",
-  "domain-purchase",
-  "domain-settings",
-  "host-apply",
-  "hosting-apply",
-  "stack-apply",
-  "cloudflare-apply",
-  "pages-apply",
-  "promote",
-  "github-settings",
-] as const;
 
 const MoneySchema = z.object({
   amount: z.number().finite(),
@@ -78,6 +62,11 @@ const RunReportSecretSchema: z.ZodType<RunReportSecret> = z.object({
   place: RunReportSecretPlaceSchema,
 });
 
+const RunReportSecretDeleteSchema: z.ZodType<RunReportSecretDelete> = z.object({
+  name: z.string().min(1),
+  place: RunReportSecretPlaceSchema,
+});
+
 const RunReportCostEntrySchema: z.ZodType<RunReportCostEntry> = z.object({
   at: z.string(),
   phase: z.enum(PHASES),
@@ -118,6 +107,7 @@ export const RunReportSchema: z.ZodType<RunReport> = z.object({
   plans: z.array(RunReportPlanSchema),
   changes: z.array(z.string()),
   secrets: z.array(RunReportSecretSchema),
+  deletedSecrets: z.array(RunReportSecretDeleteSchema),
   costs: RunReportCostsSchema,
   pullRequest: z
     .object({ url: z.string().min(1), number: z.number().int().positive().optional() })
@@ -126,6 +116,30 @@ export const RunReportSchema: z.ZodType<RunReport> = z.object({
   failure: RunReportFailureSchema.optional(),
   nextSteps: z.array(z.string()),
 });
+
+/**
+ * Counts valid {@link CostEntry} records currently in `filePath`, skipping corrupt or truncated
+ * lines identically to `CostLedger.entries()` so a prior partial line never shifts the run offset.
+ */
+export function countValidCostEntriesSync(filePath: string): number {
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf8");
+  } catch {
+    return 0;
+  }
+  let valid = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      if (RunReportCostEntrySchema.safeParse(JSON.parse(trimmed)).success) valid += 1;
+    } catch {
+      // Skip corrupt/truncated lines identically to CostLedger.entries().
+    }
+  }
+  return valid;
+}
 
 /** Round a USD total to 6 decimal places to avoid IEEE-754 summation noise. */
 function roundUsd(value: number): number {
@@ -245,6 +259,10 @@ export function redactRunReport(report: RunReport, redactor: Pick<Redactor, "red
       ...entry,
       name: r(entry.name),
       keyId: r(entry.keyId),
+    })),
+    deletedSecrets: report.deletedSecrets.map((entry) => ({
+      ...entry,
+      name: r(entry.name),
     })),
     costs: {
       totalUsd: report.costs.totalUsd,

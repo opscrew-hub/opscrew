@@ -445,7 +445,7 @@ export async function runDestroyCommand(
     }
   };
   const result = await runPhaseCommand(ctx, teardown, scriptHint);
-  if (result === undefined) return;
+  if (result === undefined || flags.planOnly === true) return;
   if (provider === "portainer") {
     if (result.stackPlan !== undefined) {
       ctx.stdout(`\nApplied the stack teardown plan ${result.stackPlan} to your Portainer.\n`);

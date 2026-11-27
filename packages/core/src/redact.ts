@@ -66,6 +66,7 @@ export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
     pattern:
       /-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END[A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*$)/g,
   },
+  { id: "age-secret-key", pattern: /(?<![A-Za-z0-9_])AGE-SECRET-KEY-1[A-Z0-9]{50,}/g },
   { id: "github-token", pattern: TOKEN_PATTERNS["github-token"] },
   { id: "github-pat", pattern: TOKEN_PATTERNS["github-pat"] },
   { id: "anthropic-api-key", pattern: TOKEN_PATTERNS["anthropic-api-key"] },

@@ -1,10 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RUN_REPORT_SCHEMA_VERSION, type RunReport } from "@opscrew/contracts";
 import { afterEach, describe, expect, it } from "vitest";
+import { isSecretEnvName } from "./env";
 import { Redactor } from "./redact";
 import {
+  countValidCostEntriesSync,
   firstLineOf,
   RunReportSchema,
   redactRunReport,
@@ -63,6 +65,7 @@ describe("report.json v1 (Feature 041)", () => {
           place: { kind: "environment", environment: "production" },
         },
       ],
+      deletedSecrets: [],
       costs: summarizeRunCosts([]),
       nextSteps: ["Approve hash to apply."],
       ...overrides,
@@ -168,5 +171,29 @@ describe("report.json v1 (Feature 041)", () => {
       redactor,
     );
     expect(out.secrets[0]?.encryptedValue).toBe(ciphertext);
+  });
+
+  it("treats OPSCREW_RECOVERY_KEY as a secret env var and redacts age secret keys automatically", () => {
+    expect(isSecretEnvName("OPSCREW_RECOVERY_KEY")).toBe(true);
+    expect(isSecretEnvName("opscrew_recovery_key")).toBe(true);
+    const redactor = new Redactor();
+    const fakeAge = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
+    expect(redactor.redact(`key=${fakeAge}`)).toBe("key=[REDACTED:age-secret-key]");
+  });
+
+  it("counts only valid CostEntry lines in countValidCostEntriesSync (ignoring corrupt lines)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "opscrew-cost-count-"));
+    dirs.push(dir);
+    const file = path.join(dir, "costs.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ at: "2026-11-27T08:00:00Z", phase: "analyze", costUsd: 0.01 }),
+        "{truncated-corrupt-json",
+        JSON.stringify({ wrong: true }),
+        JSON.stringify({ at: "2026-11-27T08:01:00Z", phase: "adapt", costUsd: 0.02 }),
+      ].join("\n"),
+    );
+    expect(countValidCostEntriesSync(file)).toBe(2);
   });
 });

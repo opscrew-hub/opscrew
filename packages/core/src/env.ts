@@ -8,7 +8,7 @@
  */
 
 /** Secrets whose names have no secret-looking suffix, matched by name. */
-const SECRET_NAMES = new Set(["TF_ENCRYPTION", "OPSCREW_STATE_PASSPHRASE"]);
+const SECRET_NAMES = new Set(["TF_ENCRYPTION", "OPSCREW_STATE_PASSPHRASE", "OPSCREW_RECOVERY_KEY"]);
 
 const SECRET_SUFFIXES = [
   "_TOKEN",

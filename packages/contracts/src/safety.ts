@@ -29,52 +29,56 @@ export interface ToolPolicy {
 // Approvals
 // ---------------------------------------------------------------------------------------------
 
-export type ApprovalKind =
-  | "iac-apply"
-  | "repo-write"
-  | "git-push"
-  | "pull-request"
-  | "github-secrets"
-  | "remote-exec"
-  | "tool-call"
+/** All approval request kinds enforced by OpsCrew's safety gate. */
+export const APPROVAL_KINDS = [
+  "iac-apply",
+  "repo-write",
+  "git-push",
+  "pull-request",
+  "github-secrets",
+  "remote-exec",
+  "tool-call",
   /** Buying a domain: costs money, cannot be refunded; always typed, never granted by `--yes`. */
-  | "domain-purchase"
+  "domain-purchase",
   /** Changing a registered domain's settings (auto-renew). */
-  | "domain-settings"
+  "domain-settings",
   /** Applying a host plan to a server the user owns; bound to the host plan's SHA-256 hash. */
-  | "host-apply"
+  "host-apply",
   /**
    * Applying a hosting plan to a hosting account through its panel's API (hostnames, databases, cron,
    * the agent's files, settings); bound to the hosting plan's SHA-256 hash, never granted by `--yes`.
    */
-  | "hosting-apply"
+  "hosting-apply",
   /**
    * Applying a stack plan to a Portainer the user runs (stacks, registry entry, volumes); bound to
    * the stack plan's SHA-256 hash, never granted by `--yes`.
    */
-  | "stack-apply"
+  "stack-apply",
   /**
    * Applying a shared Cloudflare plan (OpsCrew's rules in a zone, the Zero Trust organization and
    * one-time-PIN identity provider); bound to the plan's SHA-256 hash, never granted by `--yes`.
    */
-  | "cloudflare-apply"
+  "cloudflare-apply",
   /**
    * Applying a Pages plan to a repository's GitHub Pages site (the workflow source, the custom
    * domain, HTTPS, or deleting the site); bound to the Pages plan's SHA-256 hash, never granted by
    * `--yes`.
    */
-  | "pages-apply"
+  "pages-apply",
   /**
    * Deploying the image another environment runs to the next one (a promotion, or a rollback);
    * bound to the SHA-256 hash of the target environment's plan hash, the image digest and both
    * environments, never granted by `--yes`.
    */
-  | "promote"
+  "promote",
   /**
    * Changing the repository's GitHub settings: creating or deleting a GitHub environment, its
    * protection rules, the approval policy for outside contributors' workflow runs.
    */
-  | "github-settings";
+  "github-settings",
+] as const;
+
+export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 
 export interface PolicyResult {
   policyId: string;

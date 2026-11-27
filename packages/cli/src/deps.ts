@@ -52,6 +52,7 @@ import { OpenAIAgentRuntime } from "@opscrew/runtime-openai";
 import { createApprovalHandler, PlanOnlyApprovalHandler } from "./approval";
 import type { ValueInput } from "./commands/values";
 import type { CliContext } from "./context";
+import { checkActionsPlanFile } from "./report";
 import { clackPrompts, type UiPrompts } from "./ui/prompts";
 
 /**
@@ -287,6 +288,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     ctx.report.setTarget({ app: options.app, environment: options.environment ?? "prod" });
     ctx.report.attachCosts(built.paths.files.costs);
   }
+  checkActionsPlanFile(built.paths.files.plan, ctx.env);
   const streamed = extra.streams === undefined ? built : { ...built, streams: extra.streams };
   const real = extra.fetch === undefined;
   const registryDs = extra.registryDs ?? (real ? registryDsLookup() : undefined);

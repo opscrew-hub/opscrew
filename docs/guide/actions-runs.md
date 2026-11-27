@@ -35,22 +35,26 @@ Pass these flags before the subcommand (or set the matching environment variable
 | `--secrets-key <base64>` | `OPSCREW_SECRETS_KEY` | Non-secret base64 Curve25519 repository public key. |
 | `--env-secrets-key-id <id>` | `OPSCREW_ENV_SECRETS_KEY_ID` | Non-secret GitHub Actions environment public key ID. |
 | `--env-secrets-key <base64>` | `OPSCREW_ENV_SECRETS_KEY` | Non-secret base64 Curve25519 environment public key. |
-| `--env-secrets-name <name>` | `OPSCREW_ENV_SECRETS_NAME` | Optional guard ensuring environment secrets seal only for the named GitHub environment. |
+| `--env-secrets-name <name>` | `OPSCREW_ENV_SECRETS_NAME` | Required whenever `--env-secrets-key*` is set: exact GitHub environment name the key belongs to. |
 
-Set `OPSCREW_ACTIONS_RUN=1` in the workflow environment so commands that require your own computer
-(`localhost`, `mcp`, `vpn`, `secrets folder`) fail fast with a clear next step instead of trying
-to touch a local machine.
+Set `OPSCREW_ACTIONS_RUN=1` in the workflow environment so commands and plans that require your own
+computer (`localhost`, home hosting `target.home`, `mcp`, `vpn`, `secrets folder`) fail fast with a
+clear next step instead of trying to touch a local machine. Sealed secret key flags require
+`--report <path>` (or `OPSCREW_REPORT_PATH`) so sealed secrets are never silently discarded.
 
 ## Sealed-box secret handoff
 
-A workflow's `GITHUB_TOKEN` cannot write repository or environment secrets. When `--secrets-key-id`
-and `--secrets-key` (plus environment keys when using GitHub Environments) are supplied:
+A workflow's `GITHUB_TOKEN` cannot write or delete repository or environment secrets. When
+`--secrets-key-id` and `--secrets-key` (plus environment keys and `--env-secrets-name` when using
+GitHub Environments) are supplied:
 
 - OpsCrew seals each generated or updated secret locally with libsodium `crypto_box_seal` to
   GitHub's public key and emits **only ciphertext** in `report.json`'s `secrets[]` array:
   `{ name, keyId, encryptedValue, place }`.
-- The dashboard's GitHub App writes those ciphertexts directly to GitHub's Secrets API without ever
-  seeing a plaintext value.
+- Secret removals (such as `values unset` or `destroy`) are recorded in `deletedSecrets[]`
+  (`{ name, place }`) instead of calling GitHub's forbidden `DELETE` endpoint.
+- The dashboard's GitHub App applies `secrets[]` and `deletedSecrets[]` only when `status` is
+  `"ok"`, without ever seeing a plaintext value.
 - On a public repository, uploading `opscrew-report.json` as an Actions artifact remains safe
   because every non-ciphertext field is redacted and only GitHub's private key can open
   `encryptedValue`.

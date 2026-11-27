@@ -26,6 +26,12 @@ export interface RunReportPlan {
 /** Where a sealed GitHub Actions secret should be stored by the dashboard's GitHub App. */
 export type RunReportSecretPlace = { kind: "repo" } | { kind: "environment"; environment: string };
 
+/** One secret to delete via the dashboard's GitHub App when `GITHUB_TOKEN` lacks Secrets: write. */
+export interface RunReportSecretDelete {
+  name: string;
+  place: RunReportSecretPlace;
+}
+
 /**
  * One newly generated or updated secret, encrypted with libsodium `crypto_box_seal` to GitHub's
  * non-secret Actions public key so `report.json` carries ciphertext only.
@@ -96,6 +102,7 @@ export interface RunReport {
   plans: RunReportPlan[];
   changes: string[];
   secrets: RunReportSecret[];
+  deletedSecrets: RunReportSecretDelete[];
   costs: RunReportCosts;
   pullRequest?: RunReportPullRequest;
   verify?: RunReportVerify;
@@ -104,10 +111,12 @@ export interface RunReport {
 }
 
 /**
- * Captures secret writes during an Actions run by sealing values to GitHub's Actions public key
- * instead of calling GitHub's write-only Secrets API (which `GITHUB_TOKEN` cannot access).
+ * Captures secret writes and deletes during an Actions run by sealing values to GitHub's Actions
+ * public key instead of calling GitHub's write-only Secrets API (which `GITHUB_TOKEN` cannot access).
  */
 export interface SealedSecretSink {
   seal(name: string, value: string, place: RunReportSecretPlace): Promise<RunReportSecret>;
+  recordDelete(name: string, place: RunReportSecretPlace): void;
   entries(): readonly RunReportSecret[];
+  deletedEntries(): readonly RunReportSecretDelete[];
 }

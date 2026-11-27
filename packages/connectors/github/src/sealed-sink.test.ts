@@ -99,4 +99,35 @@ describe("createSealedSecretSink (Feature 041)", () => {
     );
     expect(decrypted).toBe(second);
   });
+
+  it("tracks secret deletions via recordDelete and requires environment name when environment key is set", async () => {
+    const repoKp = await generateKeyPair();
+    const envKp = await generateKeyPair();
+    expect(() =>
+      createSealedSecretSink(
+        {
+          repo: { keyId: "repo-1", publicKey: repoKp.publicKey },
+          environment: { name: "   ", keyId: "env-1", publicKey: envKp.publicKey },
+        },
+        new Redactor(),
+      ),
+    ).toThrow(/Environment name is required/);
+
+    const sink = createSealedSecretSink(
+      {
+        repo: { keyId: "repo-1", publicKey: repoKp.publicKey },
+        environment: { name: "production", keyId: "env-1", publicKey: envKp.publicKey },
+      },
+      new Redactor(),
+    );
+    await sink.seal("OLD_SECRET", fakeSecret("generic-password"), {
+      kind: "environment",
+      environment: "production",
+    });
+    sink.recordDelete("OLD_SECRET", { kind: "environment", environment: "production" });
+    expect(sink.entries()).toHaveLength(0);
+    expect(sink.deletedEntries()).toEqual([
+      { name: "OLD_SECRET", place: { kind: "environment", environment: "production" } },
+    ]);
+  });
 });

@@ -1128,7 +1128,7 @@ export async function setSecretAt(
  * phase it belongs to, when one).
  */
 export async function deleteSecretAt(
-  deps: Pick<PhaseDeps, "audit">,
+  deps: Pick<PhaseDeps, "audit"> & Partial<Pick<PhaseDeps, "sealedSecrets">>,
   github: {
     api: Pick<GitHubClient, "deleteActionsSecret" | "deleteEnvironmentSecret">;
     owner: string;
@@ -1138,6 +1138,16 @@ export async function deleteSecretAt(
   phase?: PhaseName,
 ): Promise<void> {
   const { api, owner, repo } = github;
+  if (deps.sealedSecrets !== undefined) {
+    deps.sealedSecrets.recordDelete(
+      place.name,
+      place.environment === undefined
+        ? { kind: "repo" }
+        : { kind: "environment", environment: place.environment },
+    );
+    await auditSecret(deps, "delete", `${owner}/${repo}`, place, phase);
+    return;
+  }
   if (place.environment === undefined) {
     await api.deleteActionsSecret(owner, repo, place.name);
   } else {
