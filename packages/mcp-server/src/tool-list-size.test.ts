@@ -11,7 +11,7 @@ import { createOpscrewMcpServer } from "./server";
 const TOOL_LIST_BUDGET = 40_000;
 
 /** No tool may be removed to meet the budget. */
-const TOOL_COUNT = 43;
+const TOOL_COUNT = 44;
 
 describe("tools/list", () => {
   it(`stays under ${TOOL_LIST_BUDGET} characters with every tool listed`, async () => {

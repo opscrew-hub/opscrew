@@ -497,8 +497,8 @@ describe("DeployPlan target provider", () => {
       const target = { ...plan.target, provider };
       expect(DeployPlanSchema.safeParse({ ...plan, target }).success, provider).toBe(true);
     }
-    const aws = { ...plan, target: { ...plan.target, provider: "aws" } };
-    expect(pathsOf(DeployPlanSchema.safeParse(aws))).toEqual(["target.provider"]);
+    const unknown = { ...plan, target: { ...plan.target, provider: "unknown-cloud" } };
+    expect(pathsOf(DeployPlanSchema.safeParse(unknown))).toEqual(["target.provider"]);
   });
 
   it("keeps the exact shape of Hetzner and DigitalOcean targets", async () => {
@@ -1263,6 +1263,7 @@ describe("DeployPlan target on an existing Portainer", () => {
       "cloudflare-workers",
       "github-pages",
       "hosting",
+      "aws",
     ]);
     expect(DesignOptionSchema.shape.target.shape.provider.options).toEqual(
       DeployProviderSchema.options,

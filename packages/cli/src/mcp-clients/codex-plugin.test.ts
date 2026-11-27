@@ -84,8 +84,11 @@ describe("the Codex plugin", () => {
     const claude = await readJson(".claude-plugin/marketplace.json");
     expect(codex.name).toBe(claude.name);
     expect(codex.interface).toEqual({ displayName: "OpsCrew" });
+    const coreClaude = claude.plugins.filter(
+      (plugin: { name: string }) => plugin.name === "opscrew",
+    );
     expect(codex.plugins).toEqual(
-      claude.plugins.map((plugin: { name: string; version: string }) => ({
+      coreClaude.map((plugin: { name: string; version: string }) => ({
         name: plugin.name,
         version: plugin.version,
         source: { source: "local", path: "./plugin" },

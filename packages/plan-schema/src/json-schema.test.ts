@@ -88,6 +88,7 @@ describe("JSON Schema export", () => {
               required: ["provider", "mode", "site"],
             },
             { properties: { provider: { const: "hosting" } } },
+            { properties: { provider: { const: "aws" } } },
           ],
         },
         environment: {
