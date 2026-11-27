@@ -20,3 +20,4 @@ Use this companion skill when the user wants to deploy an application to **Amazo
    - GitHub Actions deploys MUST use keyless OIDC (`id-token: write`, strict `StringEquals` `sub` claim) — zero stored `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
    - Databases stay private (`publicly_accessible = false`) and encrypted; secret values are written out-of-band to AWS Secrets Manager / SSM Parameter Store and NEVER embedded in Terraform state.
    - When Cloudflare manages DNS alongside AWS ACM, ACM DNS-01 CNAME validation records MUST stay `proxied = false` (DNS only).
+

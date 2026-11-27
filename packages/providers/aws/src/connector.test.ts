@@ -21,10 +21,10 @@ function makeFakeRedactor(): ProviderRedactor & { literals: string[] } {
 }
 
 describe("034 AWS SigV4 connector (T3407)", () => {
-  it("computes deterministic AWS4-HMAC-SHA256 Authorization headers", () => {
+  it("computes deterministic AWS4-HMAC-SHA256 Authorization headers with RFC 3986 encoding", () => {
     const headers = signAwsV4Request({
       method: "POST",
-      url: "https://sts.us-east-1.amazonaws.com/",
+      url: "https://sts.us-east-1.amazonaws.com/?Filter=a!b'c(d)e*f",
       service: "sts",
       region: "us-east-1",
       body: "Action=GetCallerIdentity&Version=2011-06-15",
@@ -37,8 +37,9 @@ describe("034 AWS SigV4 connector (T3407)", () => {
     );
   });
 
-  it("verifies credentials, reads ECS status & redacted CloudWatch logs, writes secrets out-of-band, and runs isolated restore drills", async () => {
+  it("verifies credentials, reads ECS status & redacted CloudWatch logs, lists sorted snapshots, writes secrets out-of-band, and runs honest isolated restore drills", async () => {
     const calls: Array<{ url: string; target?: string; body: string }> = [];
+    let drillDeleted = false;
     const fetch: FetchLike = async (url, init) => {
       const headers = (init?.headers ?? {}) as Record<string, string>;
       const body = String(init?.body ?? "");
@@ -47,6 +48,28 @@ describe("034 AWS SigV4 connector (T3407)", () => {
       if (body.includes("Action=GetCallerIdentity")) {
         return new Response(
           "<GetCallerIdentityResponse><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:role/deploy</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>",
+          { status: 200 },
+        );
+      }
+      if (body.includes("Action=DescribeDBSnapshots")) {
+        return new Response(
+          `<DescribeDBSnapshotsResponse><DescribeDBSnapshotsResult><DBSnapshots>
+            <DBSnapshot><DBSnapshotIdentifier>snap-old</DBSnapshotIdentifier><Engine>postgres</Engine><SnapshotCreateTime>2026-11-25T10:00:00Z</SnapshotCreateTime><Status>available</Status></DBSnapshot>
+            <DBSnapshot><DBSnapshotIdentifier>snap-new</DBSnapshotIdentifier><Engine>postgres</Engine><SnapshotCreateTime>2026-11-27T10:00:00Z</SnapshotCreateTime><Status>available</Status></DBSnapshot>
+          </DBSnapshots></DescribeDBSnapshotsResult></DescribeDBSnapshotsResponse>`,
+          { status: 200 },
+        );
+      }
+      if (body.includes("Action=DeleteDBInstance")) {
+        drillDeleted = true;
+        return new Response("<DeleteDBInstanceResponse/>", { status: 200 });
+      }
+      if (body.includes("Action=DescribeDBInstances")) {
+        if (drillDeleted) {
+          return new Response("<Error><Code>DBInstanceNotFound</Code></Error>", { status: 404 });
+        }
+        return new Response(
+          "<DescribeDBInstancesResponse><DBInstance><DBInstanceStatus>available</DBInstanceStatus></DBInstance></DescribeDBInstancesResponse>",
           { status: 200 },
         );
       }
@@ -86,15 +109,25 @@ describe("034 AWS SigV4 connector (T3407)", () => {
       },
       redactor,
       now: () => new Date("2026-11-27T12:00:00.000Z"),
+      sleep: async () => undefined,
+      maxPollAttempts: 3,
     });
 
-    const id = await connector.verifyCredentials();
+    // Destructured verifyCredentials must still work (no `this` binding issue).
+    const { verifyCredentials } = connector;
+    const id = await verifyCredentials();
     expect(id).toEqual({
       ok: true,
       accountId: "123456789012",
       principalArn: "arn:aws:iam::123456789012:role/deploy",
     });
     expect(calls[0]?.url).toBe("http://localhost:4566/");
+
+    const snaps = await connector.listSnapshots({
+      region: "us-east-1",
+      identifierPrefix: "opscrew-shop-prod",
+    });
+    expect(snaps.map((s) => s.id)).toEqual(["snap-new", "snap-old"]);
 
     const status = await connector.readStatus({
       appName: "shop",
@@ -126,16 +159,20 @@ describe("034 AWS SigV4 connector (T3407)", () => {
 
     const drill = await connector.runRestoreDrill({
       region: "us-east-1",
-      snapshotId: "snap-1",
+      snapshotId: "snap-new",
       service: "db",
       drillInstanceId: "opscrew-drill-1",
+      dbSubnetGroupName: "opscrew-shop-prod-db",
+      vpcSecurityGroupIds: ["sg-private-db"],
     });
     expect(drill.verified).toBe(true);
+    expect(drill.cleanedUp).toBe(true);
     expect(
       calls.some(
         (c) =>
           c.body.includes("Action=RestoreDBInstanceFromDBSnapshot") &&
-          c.body.includes("PubliclyAccessible=false"),
+          c.body.includes("PubliclyAccessible=false") &&
+          c.body.includes("DBSubnetGroupName=opscrew-shop-prod-db"),
       ),
     ).toBe(true);
     expect(
@@ -144,5 +181,43 @@ describe("034 AWS SigV4 connector (T3407)", () => {
           c.body.includes("Action=DeleteDBInstance") && c.body.includes("SkipFinalSnapshot=true"),
       ),
     ).toBe(true);
+  });
+
+  it("reports verified=false and cleanedUp=false honestly when drill instance stays stuck in creating and delete fails (Blocker #6)", async () => {
+    const fetch: FetchLike = async (_url, init) => {
+      const body = String(init?.body ?? "");
+      if (body.includes("Action=RestoreDBInstanceFromDBSnapshot")) {
+        return new Response("<RestoreDBInstanceFromDBSnapshotResponse/>", { status: 200 });
+      }
+      if (body.includes("Action=DescribeDBInstances")) {
+        return new Response(
+          "<DescribeDBInstancesResponse><DBInstance><DBInstanceStatus>creating</DBInstanceStatus></DBInstance></DescribeDBInstancesResponse>",
+          { status: 200 },
+        );
+      }
+      if (body.includes("Action=DeleteDBInstance")) {
+        return new Response("<Error><Code>InvalidDBInstanceState</Code></Error>", { status: 400 });
+      }
+      return new Response("<ok/>", { status: 200 });
+    };
+
+    const connector = createAwsConnector({
+      fetch,
+      env: { AWS_ACCESS_KEY_ID: "k", AWS_SECRET_ACCESS_KEY: "s" },
+      redactor: makeFakeRedactor(),
+      now: () => new Date("2026-11-27T12:00:00.000Z"),
+      sleep: async () => undefined,
+      maxPollAttempts: 2,
+    });
+
+    const drill = await connector.runRestoreDrill({
+      region: "us-east-1",
+      snapshotId: "snap-1",
+      service: "db",
+      drillInstanceId: "opscrew-drill-stuck",
+    });
+    expect(drill.verified).toBe(false);
+    expect(drill.cleanedUp).toBe(false);
+    expect(drill.detail).toContain("NOT confirmed deleted");
   });
 });

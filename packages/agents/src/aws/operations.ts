@@ -229,6 +229,11 @@ export async function runAwsDrift(
   };
 }
 
+/** Canonical RDS identifier matching `aws_db_instance.app.identifier` in `@opscrew/provider-aws`. */
+function awsDbIdentifier(appName: string, environment: string): string {
+  return `opscrew-${appName}-${environment}`;
+}
+
 /** Lists managed RDS/AWS snapshots for the app. */
 export async function runAwsSnapshotList(
   deps: PhaseDeps,
@@ -239,7 +244,7 @@ export async function runAwsSnapshotList(
   const connector = resolveAwsConnector(plugin, deps, options);
   return connector.listSnapshots({
     region: target.region,
-    identifierPrefix: `${plan.app.name}-${deps.paths.environment}`,
+    identifierPrefix: awsDbIdentifier(plan.app.name, deps.paths.environment),
   });
 }
 
@@ -264,8 +269,9 @@ export async function runAwsSnapshotTake(
     .replace(/[-:]/g, "")
     .replace(/\.\d+Z$/, "Z")
     .toLowerCase();
-  const instanceId = options.instanceId ?? `${plan.app.name}-${deps.paths.environment}-db`;
-  const snapshotId = options.snapshotId ?? `${plan.app.name}-${deps.paths.environment}-${stamp}`;
+  const dbId = awsDbIdentifier(plan.app.name, deps.paths.environment);
+  const instanceId = options.instanceId ?? dbId;
+  const snapshotId = options.snapshotId ?? `${dbId}-${stamp}`;
   return connector.takeSnapshot({
     region: target.region,
     service: dbComponent.service,
@@ -274,22 +280,67 @@ export async function runAwsSnapshotTake(
   });
 }
 
-/** Runs an isolated throwaway RDS restore drill (ADR 0034: `PubliclyAccessible=false`, auto-cleaned). */
+/**
+ * Runs an isolated throwaway RDS restore drill (ADR 0034: `PubliclyAccessible=false`, private DB
+ * subnet group, verified `available`, confirmed deleted). Requires plan-hash approval unless run
+ * under a pre-installed scheduled standing approval (`standingApproval: true`).
+ */
 export async function runAwsRestoreDrill(
   deps: PhaseDeps,
-  options: AwsPlanInput & { readonly snapshotId: string; readonly drillInstanceId?: string },
+  options: AwsPlanInput & {
+    readonly snapshotId: string;
+    readonly drillInstanceId?: string;
+    readonly dbSubnetGroupName?: string;
+    readonly vpcSecurityGroupIds?: readonly string[];
+    readonly standingApproval?: boolean;
+  },
 ): Promise<ManagedCloudRestoreDrillResult> {
   const { plan, target } = await resolvePlanAndTarget(deps, options);
   const plugin = await loadAwsPlugin(deps, options);
   const connector = resolveAwsConnector(plugin, deps, options);
   const dbComponent = target.components.database;
-  const drillInstanceId =
-    options.drillInstanceId ?? `${plan.app.name}-${deps.paths.environment}-drill`;
+  const dbId = awsDbIdentifier(plan.app.name, deps.paths.environment);
+  const drillInstanceId = options.drillInstanceId ?? `${dbId}-drill`;
+  const dbSubnetGroupName = options.dbSubnetGroupName ?? `${dbId}-db`;
+
+  if (options.standingApproval !== true) {
+    const drillHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          action: "aws-restore-drill",
+          app: plan.app.name,
+          environment: deps.paths.environment,
+          region: target.region,
+          snapshotId: options.snapshotId,
+          drillInstanceId,
+          dbSubnetGroupName,
+        }),
+      )
+      .digest("hex");
+    const decision = await deps.approvals.request({
+      kind: "remote-exec",
+      title: `Run isolated RDS restore drill for ${plan.app.name} (${options.snapshotId})`,
+      details: `Restores snapshot ${options.snapshotId} into private throwaway RDS instance ${drillInstanceId} (PubliclyAccessible=false, subnet group ${dbSubnetGroupName}), verifies it becomes available, and deletes it.`,
+      planHash: drillHash,
+    });
+    if (!decision.approved) {
+      throw new OpsCrewError(
+        "PLAN_NOT_APPROVED",
+        `AWS restore drill was not approved (${decision.reason ?? "declined"}).`,
+      );
+    }
+    await deps.approvals.assertApprovedRemoteExec(drillHash);
+  }
+
   return connector.runRestoreDrill({
     region: target.region,
     snapshotId: options.snapshotId,
     service: dbComponent?.service ?? "rds-postgres",
     drillInstanceId,
+    dbSubnetGroupName,
+    ...(options.vpcSecurityGroupIds === undefined
+      ? {}
+      : { vpcSecurityGroupIds: options.vpcSecurityGroupIds }),
   });
 }
 

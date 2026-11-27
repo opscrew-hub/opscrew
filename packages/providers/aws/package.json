@@ -1,24 +1,45 @@
 {
   "name": "@opscrew/provider-aws",
   "version": "0.1.0",
-  "private": true,
-  "description": "Amazon Web Services (AWS): installable managed-services provider plugin (design, pricing, overrides, vendored OpenTofu/Terraform HCL, OIDC workflows, and typed SigV4 connector).",
+  "description": "Official installable OpsCrew provider plugin for Amazon Web Services (AWS) managed services (ADR 0040).",
   "license": "Apache-2.0",
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
   "opscrewPlugin": {
+    "id": "aws",
     "contractVersion": 1,
-    "providerId": "aws"
+    "companionClaudePlugin": "opscrew-aws@opscrew"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
   },
   "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --external @opscrew/contracts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
     "@opscrew/contracts": "workspace:*",
-    "@opscrew/core": "workspace:*",
-    "@opscrew/plan-schema": "workspace:*"
+    "@opscrew/plan-schema": "workspace:*",
+    "tsup": "^8.5.1"
   }
 }

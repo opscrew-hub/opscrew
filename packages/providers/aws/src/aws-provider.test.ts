@@ -222,7 +222,93 @@ describe("034 AWS HCL renderer & keyless OIDC workflow (T3405)", () => {
     expect(wf.content).toContain("id-token: write");
     expect(wf.content).toContain("aws-actions/configure-aws-credentials@");
     expect(wf.content).toContain("role-to-assume: ${{ vars.OPSCREW_AWS_DEPLOY_ROLE_ARN }}");
+    expect(wf.content).toContain("aws ecs register-task-definition");
     expect(wf.content).not.toContain("AWS_SECRET_ACCESS_KEY");
     expect(wf.content).not.toContain("AWS_ACCESS_KEY_ID");
+  });
+
+  it("escapes HCL injection payloads, renders existingVpcId locals, app egress + DB ingress, ACM output, and per-compute renderers", () => {
+    const designed = designAwsTarget({
+      facts: {
+        appKind: "fullstack",
+        languages: ["typescript"],
+        services: [{ kind: "postgres", evidence: ["pg"] }],
+        cronJobs: [],
+      },
+      requirements: {
+        region: "us-east",
+        expectedMonthlyUsers: "1k-10k",
+        uptime: "standard",
+        dataCriticality: "important",
+        budgetMonthly: { amount: 60, currency: "USD" },
+      },
+      preset: "balanced",
+      pins: { existingVpcId: "vpc-0123456789abcdef0", noNat: true },
+    });
+
+    const files = renderAwsHcl({
+      appName: 'shop-${file("~/.aws/credentials")}',
+      environment: "prod",
+      infraDir: "infra",
+      domain: "shop.example.com",
+      target: designed.target,
+      github: { owner: "acme", repo: "shop", environmentName: "prod" },
+    });
+    const byPath = new Map(files.map((f) => [f.path, f.content]));
+
+    // Medium #7: HCL interpolation & quotes must be escaped!
+    const varsTf = byPath.get("infra/variables.tf") ?? "";
+    expect(varsTf).toContain('$${file(\\"~/.aws/credentials\\")}');
+
+    // Medium #8: existingVpcId emits unified locals so compute/database never reference missing aws_vpc.main!
+    const vpcTf = byPath.get("infra/vpc.tf") ?? "";
+    expect(vpcTf).toContain('data "aws_vpc" "main"');
+    expect(vpcTf).toContain("vpc_id             = data.aws_vpc.main.id");
+
+    // Medium #9: app SG has egress, DB SG allows app SG ingress, lean/noNat uses public subnets!
+    const computeTf = byPath.get("infra/compute.tf") ?? "";
+    expect(computeTf).toContain("egress {");
+    expect(computeTf).toContain("local.public_subnet_ids");
+    expect(computeTf).toContain("assign_public_ip = true");
+
+    const dbTf = byPath.get("infra/database.tf") ?? "";
+    expect(dbTf).toContain("security_groups = [aws_security_group.app.id]");
+    expect(dbTf).toContain("from_port       = 5432");
+
+    // Medium #10 & Low #19: scoped iam:PassRole and data lookup for existing GitHub OIDC provider by default!
+    const iamTf = byPath.get("infra/iam-oidc.tf") ?? "";
+    expect(iamTf).toContain('data "aws_iam_openid_connect_provider" "github"');
+    expect(iamTf).toContain('"iam:PassRole"');
+    expect(iamTf).toContain('image_tag_mutability = "MUTABLE"');
+
+    // Medium #16: ACM certificate and acm_validation_records output rendered when domain is set!
+    expect(byPath.get("infra/acm.tf")).toContain('resource "aws_acm_certificate" "app"');
+    expect(byPath.get("infra/outputs.tf")).toContain('output "acm_validation_records"');
+
+    // Medium #11: dedicated ec2-compose and lambda-web renderers (never silently falling through to Fargate)!
+    const ec2 = applyAwsOverrides(designed.target, ["compute.service=ec2-compose"]).target;
+    const ec2Compute =
+      renderAwsHcl({
+        appName: "shop",
+        environment: "prod",
+        infraDir: "infra",
+        target: ec2,
+        github: { owner: "acme", repo: "shop", environmentName: "prod" },
+      }).find((f) => f.path === "infra/compute.tf")?.content ?? "";
+    expect(ec2Compute).toContain('resource "aws_instance" "app"');
+    expect(ec2Compute).not.toContain("aws_ecs_service");
+
+    const lambda = applyAwsOverrides(designed.target, ["compute.service=lambda-web"]).target;
+    const lambdaCompute =
+      renderAwsHcl({
+        appName: "shop",
+        environment: "prod",
+        infraDir: "infra",
+        target: lambda,
+        github: { owner: "acme", repo: "shop", environmentName: "prod" },
+      }).find((f) => f.path === "infra/compute.tf")?.content ?? "";
+    expect(lambdaCompute).toContain('resource "aws_lambda_function" "app"');
+    expect(lambdaCompute).toContain('resource "aws_cloudwatch_log_group" "lambda"');
+    expect(lambdaCompute).toContain("retention_in_days = 30");
   });
 });

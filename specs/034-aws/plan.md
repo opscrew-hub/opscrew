@@ -66,3 +66,4 @@
 - `packages/providers/aws/src/floci.docker.test.ts` (`OPSCREW_DOCKER_TESTS=1`): spins up `floci/floci` on port `4566`, runs real `tofu init` / `validate` / `plan` / `apply` / `destroy` over generated AWS HCL (VPC, S3 + Block Public Access, IAM OIDC role, Secrets Manager shell, CloudWatch Log Group with retention, RDS/ECS resources) and cleans up containers cleanly.
 - Standalone Opus 5.5 high-effort review over the entire `034-aws` diff (strict focus on plugin install/provenance security, IAM/OIDC least privilege, secret-out-of-state, and approval/plan-hash boundaries).
 - Full-repo merge gate (`gate exit 0`).
+

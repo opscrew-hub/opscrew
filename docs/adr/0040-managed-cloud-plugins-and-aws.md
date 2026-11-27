@@ -72,3 +72,4 @@ At the same time, **Constitution I and IV remain non-negotiable**: all approval 
 - Every AWS cost trap and guardrail exception is transparent in `opscrew/plan.yaml` before a single AWS dollar is spent.
 - Full AWS OpenTofu plan/apply tests run free and token-less in CI and contributor machines using `floci`, leaving only a narrow optional live pass (real OIDC JWT, ACM DNS-01, CloudFront edge TLS) for throwaway-account verification.
 - Each separately published `@opscrew/provider-*` package adds one staged npm publish approval for the founder.
+

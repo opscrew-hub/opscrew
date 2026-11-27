@@ -17,6 +17,7 @@ import {
   readArtifact,
 } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
+import { runAwsVerify } from "../aws";
 import type { PhaseDeps } from "../context";
 import { builderBranch, followsBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
@@ -167,6 +168,24 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
   if (plan.target.provider === "hosting") {
     return verifyHosting(deps, plan, options.fetch !== undefined ? { fetch: options.fetch } : {});
+  }
+  if (plan.target.provider === "aws") {
+    const awsVerify = await runAwsVerify(deps, {
+      plan,
+      ...(options.url === undefined ? {} : { url: options.url }),
+    });
+    const checks: CheckResult[] = awsVerify.checks.map((c) =>
+      checkResult(c.id, c.id, "high", c.ok ? "pass" : "fail", c.detail),
+    );
+    const url =
+      options.url ??
+      (plan.dns.domain === undefined ? `aws://${plan.app.name}` : `https://${plan.dns.domain}`);
+    return {
+      checks,
+      passed: awsVerify.ok,
+      url,
+      plan,
+    };
   }
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";

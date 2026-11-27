@@ -3,8 +3,8 @@
  * (Feature 034, US2, ADR 0040 D6). Re-validates guardrails, re-prices, and returns a plain-English
  * cost & field diff before apply.
  */
-import { OpsCrewError } from "@opscrew/core";
 import { type AwsTarget, AwsTargetSchema } from "@opscrew/plan-schema";
+import { AwsProviderError } from "./connector";
 import { AWS_UNIT_RATES_USD, estimateAwsMonthlyCost, regionalUsd, roundUsd } from "./pricing";
 
 export interface AwsOverrideEntry {
@@ -34,7 +34,7 @@ function parseScalar(raw: string): string | number | boolean {
 export function parseAwsSetFlag(expr: string): AwsOverrideEntry {
   const eq = expr.indexOf("=");
   if (eq <= 0 || eq === expr.length - 1) {
-    throw new OpsCrewError(
+    throw new AwsProviderError(
       "INVALID_INPUT",
       `Invalid --set override "${expr}": expected <component>.<field>=<value> (for example, network.natGateway=false or database.multiAz=true).`,
     );
@@ -42,7 +42,7 @@ export function parseAwsSetFlag(expr: string): AwsOverrideEntry {
   const path = expr.slice(0, eq).trim();
   const rawValue = expr.slice(eq + 1).trim();
   if (!/^[a-zA-Z][a-zA-Z0-9_-]*(?:\.[a-zA-Z][a-zA-Z0-9_-]*)*$/.test(path)) {
-    throw new OpsCrewError(
+    throw new AwsProviderError(
       "INVALID_INPUT",
       `Invalid --set path "${path}": use dot-separated field names such as database.multiAz or observability.logsRetentionDays.`,
     );
@@ -138,7 +138,7 @@ export function applyAwsOverrides(
       const comp = draft.components[head];
       if (comp === undefined) {
         const known = Object.keys(draft.components).join(", ");
-        throw new OpsCrewError(
+        throw new AwsProviderError(
           "INVALID_INPUT",
           `Unknown AWS component "${head}" in --set ${expr}. Available components: ${known}.`,
         );
@@ -173,14 +173,14 @@ export function applyAwsOverrides(
       continue;
     }
 
-    throw new OpsCrewError("INVALID_INPUT", `Unsupported --set override "${expr}".`);
+    throw new AwsProviderError("INVALID_INPUT", `Unsupported --set override "${expr}".`);
   }
 
   const parsed = AwsTargetSchema.safeParse(draft);
   if (!parsed.success) {
     const first = parsed.error.issues[0];
     const where = first?.path.join(".") ?? "target";
-    throw new OpsCrewError(
+    throw new AwsProviderError(
       "INVALID_INPUT",
       `Override rejected at ${where}: ${first?.message ?? "invalid AWS target"}.`,
     );

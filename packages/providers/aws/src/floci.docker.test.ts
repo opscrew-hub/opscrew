@@ -11,8 +11,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { AwsTargetSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { designAwsTarget } from "./design";
 import { renderAwsHcl } from "./hcl";
 
 const execFileAsync = promisify(execFile);
@@ -68,52 +68,20 @@ describe.skipIf(!RUN_DOCKER_TESTS)(
         ]);
         await waitForFloci(endpointUrl);
 
-        const target = AwsTargetSchema.parse({
-          provider: "aws",
-          region: "us-east-1",
+        const { target } = designAwsTarget({
+          facts: {
+            appKind: "fullstack",
+            languages: ["typescript"],
+            services: [{ kind: "s3", evidence: ["S3_BUCKET"], variable: "S3_BUCKET" }],
+          },
+          requirements: {
+            region: "us-east",
+            expectedMonthlyUsers: "<1k",
+            uptime: "standard",
+            dataCriticality: "important",
+            budgetMonthly: { amount: 25, currency: "USD" },
+          },
           preset: "lean",
-          compute: "ec2-compose",
-          components: {
-            compute: {
-              service: "ec2-compose",
-              why: "Lean EC2 host for emulator test",
-              alternatives: [
-                {
-                  service: "lightsail-containers",
-                  monthlyCostUsd: 10,
-                  whyNot: "EC2 + Compose fits single-host emulator test",
-                },
-              ],
-              monthlyCostUsd: 8.5,
-              config: { instanceType: "t4g.micro" },
-            },
-            storage: {
-              service: "s3",
-              why: "Encrypted private object storage",
-              alternatives: [],
-              monthlyCostUsd: 1.0,
-              config: {},
-            },
-          },
-          pins: { noNat: true, keepCloudflareDns: true },
-          guardrails: {
-            requireOidc: true,
-            requirePrivateDb: true,
-            requireEncryption: true,
-            requireLogRetention: true,
-            forbidWildcardIam: true,
-            forbidSecretsInState: true,
-          },
-          exceptions: [],
-          observability: {
-            logsRetentionDays: 30,
-            containerInsights: false,
-            alarms: true,
-            managedGrafana: false,
-            openSearch: false,
-            tracing: false,
-            otelCollector: false,
-          },
         });
 
         // Render core VPC, S3 + Block Public Access, Secrets shell, CloudWatch Log Group, and IAM OIDC files.
@@ -122,14 +90,16 @@ describe.skipIf(!RUN_DOCKER_TESTS)(
           environment: "prod",
           infraDir: ".",
           target,
-          github: { owner: "acme", repo: "floci-demo", branch: "main" },
+          github: { owner: "acme", repo: "floci-demo", environmentName: "prod" },
           endpointUrl,
+          createOidcProvider: true,
         });
 
-        // Write rendered HCL files (focusing on core foundation files supported by floci).
+        // Write rendered foundation HCL files supported by floci.
         const selected = new Set([
           "providers.tf",
           "variables.tf",
+          "vpc.tf",
           "storage.tf",
           "secrets.tf",
           "observability.tf",
@@ -142,8 +112,13 @@ describe.skipIf(!RUN_DOCKER_TESTS)(
           await writeFile(dest, file.content, "utf8");
         }
 
+        const pluginCacheDir =
+          process.env.TF_PLUGIN_CACHE_DIR ??
+          path.join(process.env.OPSCREW_TEST_TMP ?? os.tmpdir(), "tofu-plugin-cache");
+        await mkdir(pluginCacheDir, { recursive: true });
         const env = {
           ...process.env,
+          TF_PLUGIN_CACHE_DIR: pluginCacheDir,
           AWS_ACCESS_KEY_ID: "test",
           AWS_SECRET_ACCESS_KEY: "test",
           AWS_DEFAULT_REGION: "us-east-1",

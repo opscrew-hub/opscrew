@@ -55,3 +55,4 @@ As a developer running an app on AWS, I want `opscrew status`, `opscrew logs`, `
 - Multi-region active-active AWS deployments (single-region + Multi-AZ HA in `034`).
 - EKS / Kubernetes clusters (ECS Fargate / EC2 cover container workloads without EKS control-plane overhead).
 - Mandatory real-AWS CI runs (live pass is optional on a throwaway account, covering only what `floci` cannot emulate: real IAM enforcement, real GitHub OIDC JWT, real ACM/CloudFront edge TLS).
+

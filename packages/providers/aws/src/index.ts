@@ -14,7 +14,12 @@ import { applyAwsOverrides, parseAwsSetFlag } from "./overrides";
 import { AWS_REGIONS } from "./pricing";
 import { renderAwsDeployWorkflow } from "./workflow";
 
-export { type AwsCredentials, createAwsConnector, signAwsV4Request } from "./connector";
+export {
+  type AwsCredentials,
+  AwsProviderError,
+  createAwsConnector,
+  signAwsV4Request,
+} from "./connector";
 export {
   type DesignAwsInput,
   type DesignAwsResult,
@@ -23,7 +28,9 @@ export {
 } from "./design";
 export {
   AWS_PROVIDER_VERSION,
+  awsDbIdentifier,
   githubOidcSubject,
+  hclString,
   type RenderAwsHclContext,
   renderAwsHcl,
 } from "./hcl";
@@ -123,6 +130,7 @@ export const AWS_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
       github: {
         owner,
         repo,
+        environmentName: input.environment,
         ...(input.githubOrgId === undefined ? {} : { ownerId: Number(input.githubOrgId) }),
         ...(input.githubRepoId === undefined ? {} : { repoId: Number(input.githubRepoId) }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),

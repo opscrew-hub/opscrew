@@ -127,6 +127,8 @@ export interface ManagedCloudConnectorDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly redactor: ProviderRedactor;
   readonly now?: () => Date;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly maxPollAttempts?: number;
 }
 
 /**
@@ -172,6 +174,8 @@ export interface ManagedCloudConnector {
     readonly snapshotId: string;
     readonly service: string;
     readonly drillInstanceId: string;
+    readonly dbSubnetGroupName?: string;
+    readonly vpcSecurityGroupIds?: readonly string[];
   }): Promise<ManagedCloudRestoreDrillResult>;
 }
 

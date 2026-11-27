@@ -37,7 +37,7 @@ export async function loadAwsPlugin(
       runner: deps.runner,
       env: deps.env,
       reporter: deps.reporter,
-      allowWorkspaceFallback: options.allowWorkspaceFallback ?? true,
+      allowWorkspaceFallback: options.allowWorkspaceFallback ?? false,
     }));
   if (
     typeof loaded.designTarget !== "function" ||

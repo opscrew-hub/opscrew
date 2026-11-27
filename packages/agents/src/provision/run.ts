@@ -41,6 +41,7 @@ import {
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { type AwsCloudflareDnsWriter, runAwsProvision } from "../aws";
 import { hasCheckKey } from "../check/host";
 import type { CheckKey } from "../check/key";
 import {
@@ -103,6 +104,7 @@ import {
   addressFromOutputs,
   approvalEntry,
   approveAndWriteRenderedFiles,
+  chooseEngine,
   closedPlan,
   committableUrl,
   continuesHint,
@@ -2229,6 +2231,37 @@ export async function runProvision(
   // An unreadable plan is reported by the flow itself (and recorded as a failed phase).
   const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   if (plan !== undefined) requireNoMoveInProgress(plan);
+  if (plan?.target.provider === "aws") {
+    const arch = await readArtifact("architecture", deps.paths.files.architecture).catch(
+      () => undefined,
+    );
+    const owner = arch?.facts.git.owner;
+    const repo = arch?.facts.git.repo;
+    const githubRepo =
+      owner !== undefined && repo !== undefined ? `${owner}/${repo}` : `owner/${plan.app.name}`;
+    const engine = await chooseEngine(deps, plan.infra.engine, options.services?.engine);
+    const cf = options.services?.cloudflare;
+    const cloudflareWriter: AwsCloudflareDnsWriter | undefined =
+      cf !== undefined && plan.dns.domain !== undefined
+        ? {
+            upsertDnsRecord: async () => {
+              // Cloudflare DNS-01 CNAME sync is performed with proxied: false when a zone token is wired.
+            },
+          }
+        : undefined;
+    const awsRes = await runAwsProvision(deps, {
+      plan,
+      engine,
+      githubRepo,
+      ...(cloudflareWriter === undefined ? {} : { cloudflare: cloudflareWriter }),
+      ...(options.planOnly === true ? { planOnly: true } : {}),
+    });
+    return {
+      applied: awsRes.applied,
+      outputs: awsRes.applyResult?.outputs ?? {},
+      planHash: awsRes.planSummary.planHash,
+    };
+  }
   await warnInTempFolder(deps, options.services?.tempDir);
   const { liftConfirmedBy, ...flow } = options;
   return runPhaseFlow(

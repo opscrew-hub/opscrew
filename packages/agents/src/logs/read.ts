@@ -7,6 +7,7 @@ import { type ContainerLogLine, sinceAfter } from "@opscrew/connector-portainer"
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
+import { runAwsLogs } from "../aws";
 import type { PhaseDeps } from "../context";
 import { hostingLogs } from "../hosting/logs";
 import { registerAppSecrets } from "../shared/app-secrets";
@@ -99,6 +100,21 @@ export async function readLogs(
   }
   if (plan.target.provider === "hosting") {
     return hostingLogs(deps, plan, { ...options, tail });
+  }
+  if (plan.target.provider === "aws") {
+    const awsLogs = await runAwsLogs(deps, { plan, limit: tail });
+    const lines = awsLogs.lines.map((line) => ({
+      time: line.timestamp,
+      service: line.stream,
+      stream: "stdout" as const,
+      text: line.message,
+    }));
+    return {
+      first: `CloudWatch Logs (${awsLogs.logGroup}): ${lines.length} line(s)`,
+      async *[Symbol.asyncIterator]() {
+        for (const line of lines) yield line;
+      },
+    };
   }
   if (options.failed === true) {
     return readFailedLogs(deps, plan, options);

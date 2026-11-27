@@ -302,11 +302,19 @@ function fakeEngine(options?: {
 }
 
 describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
+  it("fails closed by default when @opscrew/provider-aws is not installed (Blocker #3)", async () => {
+    const { deps } = await createTestDeps();
+    await expect(runAwsDesign(deps, { optionId: "aws-balanced" })).rejects.toThrow(
+      /not installed yet/,
+    );
+  });
+
   it("designs AWS presets, applies --set overrides, and persists validated plan.yaml", async () => {
     const { deps } = await createTestDeps();
     const res = await runAwsDesign(deps, {
       optionId: "aws-balanced",
       setFlags: ["compute.service=ec2-compose"],
+      allowWorkspaceFallback: true,
     });
     expect(res.options.map((o) => o.id)).toEqual(["aws-lean", "aws-balanced", "aws-production-ha"]);
     expect(res.target.provider).toBe("aws");
@@ -320,7 +328,10 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
 
   it("blocks AWS provision when SecOps policy detects an unsafe resource (never asks approval or applies)", async () => {
     const { deps, audit } = await createTestDeps();
-    const designed = await runAwsDesign(deps, { optionId: "aws-balanced" });
+    const designed = await runAwsDesign(deps, {
+      optionId: "aws-balanced",
+      allowWorkspaceFallback: true,
+    });
     const engine = fakeEngine({
       planJson: {
         planned_values: {
@@ -355,6 +366,7 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
         engine,
         githubRepo: "acme/shop",
         connector,
+        allowWorkspaceFallback: true,
       }),
     ).rejects.toThrow(/Blocked AWS plan due to/);
 
@@ -364,7 +376,10 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
 
   it("provisions with hash-bound approval, writes secrets out-of-band without leaking values, and wires Cloudflare ACM proxied=false", async () => {
     const { deps, audit, root } = await createTestDeps();
-    const designed = await runAwsDesign(deps, { optionId: "aws-balanced" });
+    const designed = await runAwsDesign(deps, {
+      optionId: "aws-balanced",
+      allowWorkspaceFallback: true,
+    });
     const engine = fakeEngine({
       outputs: {
         acm_validation_records: [
@@ -380,6 +395,7 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
       engine,
       githubRepo: "acme/shop",
       connector,
+      allowWorkspaceFallback: true,
       secrets: [
         {
           store: "secrets-manager",
@@ -396,6 +412,7 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
 
     expect(result.applied).toBe(true);
     expect(result.renderedFiles.some((f) => f.endsWith("providers.tf"))).toBe(true);
+    expect(result.renderedFiles.some((f) => f.endsWith("acm.tf"))).toBe(true);
     expect(result.renderedFiles.some((f) => f.endsWith("opscrew-deploy.yml"))).toBe(true);
     expect(result.writtenSecretNames).toEqual(["/opscrew/shop-api/prod/APP_SECRET"]);
     expect(result.acmRecordsWired).toEqual([
@@ -415,23 +432,44 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
       "utf8",
     );
     expect(secretsTf).not.toContain("super-secret-value-xyz");
+    // Blocker #5 check: OIDC sub must use environment:<env> matching workflow.ts!
+    const iamOidcTf = await readFile(
+      path.join(root, designed.plan.infra.dir, "iam-oidc.tf"),
+      "utf8",
+    );
+    expect(iamOidcTf).toContain("repo:acme/shop:environment:prod");
   });
 
   it("runs status, logs, verify, drift, snapshot list/take/drill, rotate, advise, and retarget", async () => {
     const { deps } = await createTestDeps();
-    const designed = await runAwsDesign(deps, { optionId: "aws-balanced" });
+    const designed = await runAwsDesign(deps, {
+      optionId: "aws-balanced",
+      allowWorkspaceFallback: true,
+    });
     const connector = fakeConnector();
     const engine = fakeEngine();
 
-    const status = await runAwsStatus(deps, { plan: designed.plan, connector });
+    const status = await runAwsStatus(deps, {
+      plan: designed.plan,
+      connector,
+      allowWorkspaceFallback: true,
+    });
     expect(status.status.healthy).toBe(true);
     expect(status.lines.some((l) => l.includes("ecs-fargate"))).toBe(true);
 
-    const logs = await runAwsLogs(deps, { plan: designed.plan, connector });
+    const logs = await runAwsLogs(deps, {
+      plan: designed.plan,
+      connector,
+      allowWorkspaceFallback: true,
+    });
     expect(logs.logGroup).toBe("/opscrew/shop-api/prod");
     expect(logs.lines[0]?.message).toBe("ready on 3000");
 
-    const verify = await runAwsVerify(deps, { plan: designed.plan, connector });
+    const verify = await runAwsVerify(deps, {
+      plan: designed.plan,
+      connector,
+      allowWorkspaceFallback: true,
+    });
     expect(verify.ok).toBe(true);
 
     const drift = await runAwsDrift(deps, {
@@ -439,36 +477,56 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
       engine,
       githubRepo: "acme/shop",
       connector,
+      allowWorkspaceFallback: true,
     });
     expect(drift.driftedFiles.length).toBeGreaterThan(0);
 
-    const snaps = await runAwsSnapshotList(deps, { plan: designed.plan, connector });
+    const snaps = await runAwsSnapshotList(deps, {
+      plan: designed.plan,
+      connector,
+      allowWorkspaceFallback: true,
+    });
     expect(snaps).toHaveLength(1);
+    expect(connector.listSnapshots).toHaveBeenCalledWith(
+      expect.objectContaining({ identifierPrefix: "opscrew-shop-api-prod" }),
+    );
 
-    const taken = await runAwsSnapshotTake(deps, { plan: designed.plan, connector });
-    expect(taken.id).toContain("shop-api-prod");
+    const taken = await runAwsSnapshotTake(deps, {
+      plan: designed.plan,
+      connector,
+      allowWorkspaceFallback: true,
+    });
+    expect(taken.id).toContain("opscrew-shop-api-prod");
 
     const drill = await runAwsRestoreDrill(deps, {
       plan: designed.plan,
       connector,
-      snapshotId: "shop-api-prod-20261127",
+      snapshotId: "opscrew-shop-api-prod-20261127",
+      allowWorkspaceFallback: true,
     });
     expect(drill.verified).toBe(true);
     expect(drill.cleanedUp).toBe(true);
+    expect(connector.runRestoreDrill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dbSubnetGroupName: "opscrew-shop-api-prod-db",
+      }),
+    );
 
     const rotated = await runAwsRotateSecrets(deps, {
       plan: designed.plan,
       connector,
+      allowWorkspaceFallback: true,
       secrets: [
         { store: "ssm-parameter", name: "/opscrew/shop-api/prod/JWT", value: "new-secret-123" },
       ],
     });
     expect(rotated.written).toEqual(["/opscrew/shop-api/prod/JWT"]);
 
-    const advice = await runAwsAdvise(deps, { plan: designed.plan });
+    const advice = await runAwsAdvise(deps, { plan: designed.plan, allowWorkspaceFallback: true });
     expect(advice.length).toBeGreaterThan(0);
 
     const retarget = await planAwsRetarget(deps, {
+      allowWorkspaceFallback: true,
       currentPlan: {
         ...designed.plan,
         target: {
@@ -489,12 +547,19 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
 
   it("refuses AWS destroy without matching typed confirmation and succeeds when confirmed", async () => {
     const { deps: badDeps } = await createTestDeps({ approve: true, confirmText: "wrong-name" });
-    const designed = await runAwsDesign(badDeps, { optionId: "aws-lean" });
+    const designed = await runAwsDesign(badDeps, {
+      optionId: "aws-lean",
+      allowWorkspaceFallback: true,
+    });
     const engine1 = fakeEngine({ hasDestroy: true, deleteCount: 4 });
 
-    await expect(runAwsDestroy(badDeps, { plan: designed.plan, engine: engine1 })).rejects.toThrow(
-      OpsCrewError,
-    );
+    await expect(
+      runAwsDestroy(badDeps, {
+        plan: designed.plan,
+        engine: engine1,
+        allowWorkspaceFallback: true,
+      }),
+    ).rejects.toThrow(OpsCrewError);
     expect(engine1.applied).toBe(false);
 
     const { deps: goodDeps } = await createTestDeps({
@@ -502,7 +567,11 @@ describe("AWS core phase orchestration (Feature 034 T3408 & T3409)", () => {
       confirmText: designed.plan.app.name,
     });
     const engine2 = fakeEngine({ hasDestroy: true, deleteCount: 4 });
-    const destroyed = await runAwsDestroy(goodDeps, { plan: designed.plan, engine: engine2 });
+    const destroyed = await runAwsDestroy(goodDeps, {
+      plan: designed.plan,
+      engine: engine2,
+      allowWorkspaceFallback: true,
+    });
     expect(destroyed.destroyed).toBe(true);
     expect(engine2.applied).toBe(true);
   });

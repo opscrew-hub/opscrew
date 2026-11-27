@@ -31,7 +31,7 @@ export function register(program: Command, ctx: CliContext): void {
         return {
           id: spec.id,
           packageName: spec.packageName,
-          version: spec.version,
+          version: rec?.version ?? spec.version,
           displayName: spec.displayName,
           installed: rec !== undefined,
           verifiedProvenance: rec?.verifiedProvenance ?? false,
@@ -47,7 +47,7 @@ export function register(program: Command, ctx: CliContext): void {
       }
       for (const row of rows) {
         const state = row.installed
-          ? `installed (${row.version}, provenance verified)`
+          ? `installed (${row.version}, ${row.verifiedProvenance ? "provenance verified" : "UNVERIFIED"})`
           : "not installed";
         ctx.stdout(`${row.id.padEnd(8)}  ${row.packageName.padEnd(24)}  ${state}\n`);
       }
