@@ -44,7 +44,8 @@
         "localhost",
         "cloudflare-workers",
         "github-pages",
-        "hosting"
+        "hosting",
+        "aws"
       ]
     },
     "region": {

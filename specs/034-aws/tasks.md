@@ -8,9 +8,9 @@
 
 ## Wave 1 — Plugin Contract, Installer/Provenance & AWS Plan Schema (Lead)
 
-- [ ] **T3401 (lead):** Define `ManagedCloudProviderDefinition`, `ManagedCloudConnector`, `MANAGED_CLOUD_CONTRACT_VERSION = 1`, and plugin manifest types in `packages/contracts/src/managed-provider.ts` (re-exported from `@opscrew/contracts`).
-- [ ] **T3402 (lead):** Implement official plugin installer, provenance/signature verifier, contract version check, and dynamic loader in `packages/core/src/plugins/` (`installPlugin`, `removePlugin`, `listInstalledPlugins`, `loadManagedProvider`) with full unit tests (tampered integrity, bad provenance, contract mismatch, clean rollback).
-- [ ] **T3403 (lead):** Add AWS target schema (`AwsTargetSchema`, presets `lean`/`balanced`/`production-ha`, compute choices, per-component decisions with `why`/`alternatives`/`monthlyCostUsd`, `pins`, `guardrails`, `exceptions`, `observability`) in `packages/plan-schema/src/aws.ts` & `enums.ts` & `plan.ts`, cross-field refinements, unit tests, and regenerate `schemas/plan.schema.json`.
+- [x] **T3401 (lead):** Define `ManagedCloudProviderDefinition`, `ManagedCloudConnector`, `MANAGED_CLOUD_CONTRACT_VERSION = 1`, and plugin manifest types in `packages/contracts/src/managed-provider.ts` (re-exported from `@opscrew/contracts`).
+- [x] **T3402 (lead):** Implement official plugin installer, provenance/signature verifier, contract version check, and dynamic loader in `packages/core/src/plugins/` (`installPlugin`, `removePlugin`, `listInstalledPlugins`, `loadManagedProvider`) with full unit tests (tampered integrity, bad provenance, contract mismatch, clean rollback).
+- [x] **T3403 (lead):** Add AWS target schema (`AwsTargetSchema`, presets `lean`/`balanced`/`production-ha`, compute choices, per-component decisions with `why`/`alternatives`/`monthlyCostUsd`, `pins`, `guardrails`, `exceptions`, `observability`) in `packages/plan-schema/src/aws.ts` & `enums.ts` & `plan.ts`, cross-field refinements, unit tests, and regenerate `schemas/plan.schema.json`.
 
 ## Wave 2 — `@opscrew/provider-aws` Package & AWS SecOps Policies
 

@@ -158,6 +158,11 @@ function targetFor(
     }
     return input.hosting.target;
   }
+  if (target.provider === "aws") {
+    throw new Error(
+      "AWS managed-services designs are built by @opscrew/provider-aws, not VPS planTarget.",
+    );
+  }
   return {
     provider: target.provider,
     mode: "vps-compose",

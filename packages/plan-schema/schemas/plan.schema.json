@@ -772,6 +772,244 @@
           },
           "required": ["provider", "panel", "app", "webRoot"],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "aws"
+            },
+            "mode": {
+              "type": "string",
+              "const": "aws-managed"
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]{2}-[a-z-]+-\\d$"
+            },
+            "preset": {
+              "type": "string",
+              "enum": ["lean", "balanced", "production-ha"]
+            },
+            "compute": {
+              "type": "string",
+              "enum": [
+                "ec2-compose",
+                "lightsail-containers",
+                "ecs-fargate",
+                "ecs-ec2",
+                "lambda-web",
+                "lambda-event"
+              ]
+            },
+            "components": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "service": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "alternatives": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "service": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "monthlyCostUsd": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "whyNot": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": ["service", "monthlyCostUsd", "whyNot"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "monthlyCostUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "config": {
+                    "default": {},
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": ["string", "number", "boolean"]
+                    }
+                  }
+                },
+                "required": ["service", "why", "monthlyCostUsd"],
+                "additionalProperties": false
+              }
+            },
+            "pins": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "region": {
+                  "type": "string",
+                  "pattern": "^[a-z]{2}-[a-z-]+-\\d$"
+                },
+                "budgetCapUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "noNat": {
+                  "type": "boolean"
+                },
+                "existingVpcId": {
+                  "type": "string",
+                  "pattern": "^vpc-[0-9a-f]{8,17}$"
+                },
+                "existingDb": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "keepCloudflareDns": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "guardrails": {
+              "default": {
+                "privateDatabase": true,
+                "encryptionAtRest": true,
+                "automatedBackups": true,
+                "s3BlockPublicAccess": true,
+                "leastPrivilegeIam": true,
+                "logRetention": true,
+                "noPrivateCa": true
+              },
+              "type": "object",
+              "properties": {
+                "privateDatabase": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "encryptionAtRest": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "automatedBackups": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "s3BlockPublicAccess": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "leastPrivilegeIam": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "logRetention": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "noPrivateCa": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "exceptions": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "guardrail": {
+                    "type": "string",
+                    "enum": [
+                      "privateDatabase",
+                      "encryptionAtRest",
+                      "automatedBackups",
+                      "s3BlockPublicAccess",
+                      "leastPrivilegeIam",
+                      "logRetention",
+                      "noPrivateCa"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 8
+                  }
+                },
+                "required": ["guardrail", "reason"],
+                "additionalProperties": false
+              }
+            },
+            "observability": {
+              "default": {
+                "logsRetentionDays": 30,
+                "containerInsights": false,
+                "alarms": true,
+                "managedGrafana": false,
+                "openSearch": false,
+                "tracing": "none",
+                "otelCollector": false
+              },
+              "type": "object",
+              "properties": {
+                "logsRetentionDays": {
+                  "default": 30,
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "containerInsights": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "alarms": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "managedGrafana": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "openSearch": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "tracing": {
+                  "default": "none",
+                  "type": "string",
+                  "enum": ["none", "xray", "application-signals"]
+                },
+                "otelCollector": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["provider", "mode", "region", "preset", "compute", "components"],
+          "additionalProperties": false
         }
       ]
     },

@@ -44,6 +44,7 @@ const NOT_CLOUD = {
   "cloudflare-workers": "an app on Cloudflare's hosting",
   "github-pages": "a site on GitHub Pages",
   hosting: "an app on a hosting account",
+  aws: "an AWS managed-services target",
 } as const satisfies Record<Exclude<DeployTarget["provider"], CloudProvider>, string>;
 
 /**

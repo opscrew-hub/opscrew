@@ -1878,6 +1878,7 @@ function providerName(id: DeployProvider): string {
   if (id === "localhost") return "this computer";
   if (isServerlessProvider(id)) return serverlessName(id);
   if (id === "hosting") return "a hosting account";
+  if (id === "aws") return "AWS";
   return providerProfile(id).displayName;
 }
 

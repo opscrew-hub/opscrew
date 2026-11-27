@@ -4,6 +4,7 @@ export * from "./edge-provider";
 export * from "./hosting";
 export * from "./iac";
 export * from "./io";
+export * from "./managed-provider";
 export * from "./provider";
 export * from "./registrar";
 export * from "./runtime";

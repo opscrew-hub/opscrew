@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN, orText } from "@opscrew/core";
 import { z } from "zod";
 import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
+import { AwsTargetSchema } from "./aws";
 import {
   ComponentNameSchema,
   PlanServiceSchema,
@@ -26,7 +27,9 @@ import {
   IsoDateTimeSchema,
   isCloudProvider,
   isHostingProvider,
+  isManagedCloudProvider,
   isServerlessProvider,
+  type ManagedCloudProvider,
   MemoryMbSchema,
   MoneySchema,
   onOneServer,
@@ -547,7 +550,22 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
   CloudflareWorkersTargetSchema,
   GithubPagesTargetSchema,
   HostingTargetSchema,
+  AwsTargetSchema,
 ]);
+
+/** True for a managed-cloud target (e.g., AWS), narrowing it to one. */
+export function isManagedCloudTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: ManagedCloudProvider }> {
+  return isManagedCloudProvider(target.provider);
+}
+
+/** True for an AWS managed-services target, narrowing it to one. */
+export function isAwsTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: "aws" }> {
+  return target.provider === "aws";
+}
 
 /** True for a shared hosting account's target, narrowing it to one. */
 export function isHostingTarget<T extends { provider: string }>(

@@ -344,6 +344,7 @@ const NOT_ON_SERVER = {
   "cloudflare-workers": "an app on Cloudflare's hosting",
   "github-pages": "a site on GitHub Pages",
   hosting: "an app on a hosting account",
+  aws: "an AWS managed-services target",
 } as const satisfies Record<Exclude<DeployProvider, VpsProviderId>, string>;
 
 /** The provider of a plan whose app runs on one server. */

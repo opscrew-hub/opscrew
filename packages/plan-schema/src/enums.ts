@@ -154,11 +154,18 @@ export const ServerlessProviderSchema = z.enum(["cloudflare-workers", "github-pa
 export type ServerlessProvider = z.infer<typeof ServerlessProviderSchema>;
 
 /**
+ * Separately installed managed-cloud targets (ADR 0040: AWS 034, later Azure 038 and GCP 039).
+ */
+export const ManagedCloudProviderSchema = z.enum(["aws"]);
+export type ManagedCloudProvider = z.infer<typeof ManagedCloudProviderSchema>;
+
+/**
  * Every place OpsCrew can deploy to, as `opscrew/requirements.yaml` and design options name it: a
  * single server ({@link VpsProviderSchema}), a Portainer the user already runs (`portainer`), the
  * user's own computer (`localhost`, its Docker), a server-less target
- * ({@link ServerlessProviderSchema}) or a shared hosting account the user already pays for
- * (`hosting`). Only the single servers have a server for OpsCrew to create, size or price.
+ * ({@link ServerlessProviderSchema}), a shared hosting account the user already pays for
+ * (`hosting`), or a managed cloud target ({@link ManagedCloudProviderSchema}). Only the single
+ * servers have a server for OpsCrew to create, size or price.
  */
 export const DeployProviderSchema = z.enum([
   ...VpsProviderSchema.options,
@@ -166,6 +173,7 @@ export const DeployProviderSchema = z.enum([
   "localhost",
   ...ServerlessProviderSchema.options,
   "hosting",
+  ...ManagedCloudProviderSchema.options,
 ]);
 export type DeployProvider = z.infer<typeof DeployProviderSchema>;
 
@@ -187,6 +195,13 @@ export function isServerlessProvider(provider: string | undefined): provider is 
 /** True for a shared hosting account's provider (`hosting`, ADR 0030). */
 export function isHostingProvider(provider: string | undefined): provider is "hosting" {
   return provider === "hosting";
+}
+
+/** True for a managed-cloud target's provider (`aws`, ADR 0040). */
+export function isManagedCloudProvider(
+  provider: string | undefined,
+): provider is ManagedCloudProvider {
+  return ManagedCloudProviderSchema.safeParse(provider).success;
 }
 
 /** Registrars OpsCrew can buy domains with. */

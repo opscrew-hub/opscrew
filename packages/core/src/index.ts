@@ -12,6 +12,7 @@ export * from "./errors";
 export * from "./exec";
 export * from "./http";
 export * from "./paths";
+export * from "./plugins";
 export * from "./policy";
 export * from "./process";
 export * from "./redact";
