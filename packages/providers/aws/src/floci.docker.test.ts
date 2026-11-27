@@ -125,7 +125,11 @@ describe.skipIf(!RUN_DOCKER_TESTS)(
           AWS_REGION: "us-east-1",
         };
 
-        await runCmd(tofuBin, ["init", "-input=false", "-no-color"], { cwd: tmpDir, env });
+        await runCmd(tofuBin, ["init", "-input=false", "-no-color"], {
+          cwd: tmpDir,
+          env,
+          timeout: 480_000,
+        });
         const validate = await runCmd(tofuBin, ["validate", "-no-color"], { cwd: tmpDir, env });
         expect(validate.stdout).toContain("Success!");
 
@@ -149,6 +153,58 @@ describe.skipIf(!RUN_DOCKER_TESTS)(
         await runCmd("docker", ["rm", "-f", containerName]).catch(() => undefined);
         await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
       }
-    }, 300_000);
+    }, 600_000);
+
+    it("passes tofu validate on existingVpcId + balanced ECS/RDS/ACM full HCL render", async () => {
+      const tmpDir = await mkdtemp(path.join(os.tmpdir(), "opscrew-aws-existing-vpc-"));
+      const tofuBin = process.env.OPSCREW_TOFU_BIN ?? "tofu";
+      try {
+        const { target } = designAwsTarget({
+          facts: {
+            appKind: "fullstack",
+            languages: ["typescript"],
+            services: [
+              { kind: "postgres", evidence: ["DATABASE_URL"], variable: "DATABASE_URL" },
+              { kind: "s3", evidence: ["S3_BUCKET"], variable: "S3_BUCKET" },
+            ],
+          },
+          requirements: {
+            region: "us-east",
+            expectedMonthlyUsers: "1k-10k",
+            uptime: "standard",
+            dataCriticality: "important",
+            budgetMonthly: { amount: 80, currency: "USD" },
+          },
+          preset: "balanced",
+          pins: { existingVpcId: "vpc-0123456789abcdef0", noNat: true },
+        });
+        const files = renderAwsHcl({
+          appName: "existing-vpc-demo",
+          environment: "prod",
+          infraDir: ".",
+          domain: "demo.example.com",
+          target,
+          github: { owner: "acme", repo: "demo", environmentName: "prod" },
+        });
+        for (const file of files) {
+          const baseName = path.posix.basename(file.path);
+          await writeFile(path.join(tmpDir, baseName), file.content, "utf8");
+        }
+        const pluginCacheDir =
+          process.env.TF_PLUGIN_CACHE_DIR ??
+          path.join(process.env.OPSCREW_TEST_TMP ?? os.tmpdir(), "tofu-plugin-cache");
+        await mkdir(pluginCacheDir, { recursive: true });
+        const env = { ...process.env, TF_PLUGIN_CACHE_DIR: pluginCacheDir };
+        await runCmd(tofuBin, ["init", "-backend=false", "-input=false", "-no-color"], {
+          cwd: tmpDir,
+          env,
+          timeout: 480_000,
+        });
+        const validate = await runCmd(tofuBin, ["validate", "-no-color"], { cwd: tmpDir, env });
+        expect(validate.stdout).toContain("Success!");
+      } finally {
+        await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }, 600_000);
   },
 );

@@ -27,5 +27,5 @@
 
 ## Wave 4 — Real `floci` Emulator Verification, Opus 5.5 Review & Full Gate (Lead)
 
-- [ ] **T3411 (lead):** Add real Docker `floci` (`floci/floci`, MIT, port `4566`) OpenTofu `init`/`validate`/`plan`/`apply`/`destroy` integration test (`packages/providers/aws/src/floci.docker.test.ts`, `OPSCREW_DOCKER_TESTS=1`) and run it cleanly with zero leftover containers.
+- [x] **T3411 (lead):** Add real Docker `floci` (`floci/floci`, MIT, port `4566`) OpenTofu `init`/`validate`/`plan`/`apply`/`destroy` integration test (`packages/providers/aws/src/floci.docker.test.ts`, `OPSCREW_DOCKER_TESTS=1`) and run it cleanly with zero leftover containers.
 - [ ] **T3412 (lead):** Standalone Opus 5.5 high-effort review over `034-aws` (plugin install/provenance, IAM/OIDC least privilege, secret-out-of-state, approvals/plan-hash boundaries), fix all findings, and pass full-repo merge gate (`gate exit 0`).
