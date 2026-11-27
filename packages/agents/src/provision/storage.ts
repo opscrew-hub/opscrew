@@ -1002,7 +1002,7 @@ export function offsiteValues(
 }
 
 /** What the recovery copy's first age key needs (`ProvisionOptions.recovery`). */
-type RecoveryAnswers = Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+type RecoveryAnswers = Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "sealFirstKey" | "backup">;
 
 /** The plain stop when the off-server copies have no age key to be encrypted to. */
 function noAgeKey(command: string, already: string): OpsCrewError {

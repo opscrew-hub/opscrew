@@ -3,7 +3,26 @@ import { Command, CommanderError } from "commander";
 import { description } from "../package.json";
 import { ALL_COMMANDS } from "./commands/index";
 import { type CliContext, createDefaultContext } from "./context";
+import { servicesOf } from "./deps";
 import { CliExit, ERROR_EXIT_CODE, exitCodeFor, printError } from "./exit";
+import {
+  checkActionsAllowed,
+  ReportCollector,
+  type ReportGlobalFlags,
+  resolveReportPath,
+  resolveSealedTargets,
+} from "./report";
+
+/** Command path without the root `opscrew` binary name, for example `provision` or `secrets restore`. */
+function commandPath(cmd: Command): string {
+  const parts: string[] = [];
+  let current: Command | null = cmd;
+  while (current !== null && current.parent !== null) {
+    parts.unshift(current.name());
+    current = current.parent;
+  }
+  return parts.join(" ") || "opscrew";
+}
 
 /** Builds the `opscrew` program with every command registered. Errors are thrown, not exited. */
 export function createProgram(ctx: CliContext): Command {
@@ -13,6 +32,12 @@ export function createProgram(ctx: CliContext): Command {
     .version(ctx.version, "-V, --version", "Print the OpsCrew version")
     .helpOption("-h, --help", "Show help for a command")
     .option("--cwd <dir>", "Project directory to work in (defaults to the current directory)")
+    .option("--report <path>", "Write a redacted JSON run report (schemaVersion 1) to this path")
+    .option("--secrets-key-id <id>", "GitHub Actions repository secrets public key ID (for sealed report secrets)")
+    .option("--secrets-key <base64>", "GitHub Actions repository secrets base64 public key")
+    .option("--env-secrets-key-id <id>", "GitHub Actions environment secrets public key ID")
+    .option("--env-secrets-key <base64>", "GitHub Actions environment secrets base64 public key")
+    .option("--env-secrets-name <name>", "GitHub environment name the environment secrets key belongs to")
     // Global options go before the command, so `promote --version <id>` is promote's own.
     .enablePositionalOptions()
     .exitOverride()
@@ -20,9 +45,36 @@ export function createProgram(ctx: CliContext): Command {
       writeOut: (text) => ctx.stdout(text),
       writeErr: (text) => ctx.stderr(text),
     })
-    .hook("preAction", () => {
-      const { cwd } = program.opts<{ cwd?: string }>();
-      if (cwd !== undefined) ctx.cwd = path.resolve(ctx.cwd, cwd);
+    .hook("preAction", (_thisCommand, actionCommand) => {
+      const opts = program.opts<ReportGlobalFlags & { cwd?: string }>();
+      if (opts.cwd !== undefined) ctx.cwd = path.resolve(ctx.cwd, opts.cwd);
+      const reportPath = resolveReportPath(ctx.cwd, opts, ctx.env);
+      const op = commandPath(actionCommand);
+      const actionOpts = actionCommand.opts<{ planOnly?: boolean }>();
+      // Initialize collector before validating keys/actions so any early failure still writes report.json.
+      if (reportPath !== undefined) {
+        const clock = servicesOf(ctx).clock;
+        ctx.report = new ReportCollector({
+          filePath: reportPath,
+          ...(clock === undefined ? {} : { clock }),
+          redactor: ctx.redactor,
+          version: ctx.version,
+        });
+        ctx.report.setOp(op, actionOpts.planOnly === true);
+      }
+      const sealedTargets = resolveSealedTargets(opts, ctx.env);
+      if (sealedTargets !== undefined) {
+        const clock = servicesOf(ctx).clock;
+        ctx.report = new ReportCollector({
+          ...(reportPath === undefined ? {} : { filePath: reportPath }),
+          sealedTargets,
+          ...(clock === undefined ? {} : { clock }),
+          redactor: ctx.redactor,
+          version: ctx.version,
+        });
+        ctx.report.setOp(op, actionOpts.planOnly === true);
+      }
+      checkActionsAllowed(op, ctx.env);
     });
   for (const command of ALL_COMMANDS) command.register(program, ctx);
   return program;
@@ -43,12 +95,34 @@ export async function runProgram(
   argv: readonly string[],
   ctx: CliContext,
 ): Promise<number> {
+  let exitCode = 0;
+  let caught: unknown;
   try {
     await program.parseAsync([...argv]);
-    return 0;
+    exitCode = 0;
   } catch (error) {
-    return handleError(error, ctx);
+    caught = error;
+    exitCode = handleError(error, ctx);
   }
+  // If parsing failed before preAction ran (e.g. CommanderError), still write report.json when configured.
+  if (ctx.report === undefined && caught !== undefined) {
+    const opts = program.opts<ReportGlobalFlags & { cwd?: string }>();
+    const baseCwd = opts.cwd !== undefined ? path.resolve(ctx.cwd, opts.cwd) : ctx.cwd;
+    const reportPath = resolveReportPath(baseCwd, opts, ctx.env);
+    if (reportPath !== undefined) {
+      const clock = servicesOf(ctx).clock;
+      ctx.report = new ReportCollector({
+        filePath: reportPath,
+        ...(clock === undefined ? {} : { clock }),
+        redactor: ctx.redactor,
+        version: ctx.version,
+      });
+    }
+  }
+  if (ctx.report !== undefined) {
+    await ctx.report.finalize({ exitCode, ...(caught === undefined ? {} : { error: caught }) });
+  }
+  return exitCode;
 }
 
 function handleError(error: unknown, ctx: CliContext): number {

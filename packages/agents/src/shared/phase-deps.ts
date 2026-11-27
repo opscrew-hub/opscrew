@@ -4,6 +4,7 @@ import type {
   CommandRunner,
   FetchLike,
   Reporter,
+  SealedSecretSink,
 } from "@opscrew/contracts";
 import {
   ApprovalGate,
@@ -42,6 +43,8 @@ export interface PhaseDepsInput {
   clock: Clock;
   interactive: boolean;
   version: string;
+  /** Sealed secret sink for GitHub Actions runs (Feature 041). */
+  sealedSecrets?: SealedSecretSink;
 }
 
 /**
@@ -78,5 +81,6 @@ export function buildPhaseDeps(input: PhaseDepsInput): PhaseDeps {
     redactor,
     interactive: input.interactive,
     version: input.version,
+    ...(input.sealedSecrets === undefined ? {} : { sealedSecrets: input.sealedSecrets }),
   };
 }

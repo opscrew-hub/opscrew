@@ -15,6 +15,7 @@ export * from "./paths";
 export * from "./policy";
 export * from "./process";
 export * from "./redact";
+export * from "./report";
 export * from "./state";
 export * from "./tar";
 export * from "./text";

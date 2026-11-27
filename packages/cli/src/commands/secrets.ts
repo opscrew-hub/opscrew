@@ -38,21 +38,44 @@ export async function readKeyFile(ctx: CliContext, keyFile: string): Promise<str
 }
 
 /**
- * The age key for a restore: the key file's text, or (in a terminal only) a hidden prompt; `flag`
- * is the app's and environment's for the command it suggests.
+ * The age key for a restore: `OPSCREW_RECOVERY_KEY` (`--from-env`), the key file's text, or (in a
+ * terminal only) a hidden prompt; `flag` is the app's and environment's for the command it suggests.
  */
 async function readIdentity(
   ctx: CliContext,
   keyFile: string | undefined,
+  fromEnv: boolean | undefined,
   flag: string,
 ): Promise<string> {
+  if (fromEnv === true && keyFile !== undefined) {
+    throw new OpsCrewError("INVALID_INPUT", "Use either --from-env or --key-file, not both.", {
+      hint: "--from-env reads OPSCREW_RECOVERY_KEY from the environment; --key-file reads a local file.",
+    });
+  }
+  if (fromEnv === true) {
+    const text = ctx.env.OPSCREW_RECOVERY_KEY?.trim() ?? "";
+    if (text === "") {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "OPSCREW_RECOVERY_KEY is not set in the environment.",
+        {
+          hint: "Pass your age key in the OPSCREW_RECOVERY_KEY environment variable (a GitHub secret in Actions) and try again.",
+        },
+      );
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const key = line.trim();
+      if (key.startsWith("AGE-SECRET-KEY-1")) ctx.redactor.addLiteral(key, "age-identity");
+    }
+    return text;
+  }
   if (keyFile !== undefined) return readKeyFile(ctx, keyFile);
   if (!ctx.isInteractive) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       "Restoring the recovery copy needs your age key, and this run cannot ask for it.",
       {
-        hint: `Run \`opscrew secrets restore${flag}\` in a terminal, which asks for the key without showing it, or pass the key file with \`--key-file <path>\`.`,
+        hint: `Run \`opscrew secrets restore${flag}\` in a terminal, which asks for the key without showing it, pass the key file with \`--key-file <path>\`, or pass \`--from-env\` with OPSCREW_RECOVERY_KEY set.`,
       },
     );
   }
@@ -76,6 +99,7 @@ async function environmentDeps(ctx: CliContext, flags: AppEnvFlags) {
 
 interface RestoreFlags extends AppEnvFlags {
   keyFile?: string;
+  fromEnv?: boolean;
   from?: string;
   useCopy?: boolean;
   keepLocal?: boolean;
@@ -88,7 +112,7 @@ async function restore(ctx: CliContext, flags: RestoreFlags): Promise<void> {
     });
   }
   const { deps, flag } = await environmentDeps(ctx, flags);
-  const identity = await readIdentity(ctx, flags.keyFile, flag);
+  const identity = await readIdentity(ctx, flags.keyFile, flags.fromEnv, flag);
   const result = await restoreRecoveryCopy(deps, {
     identity,
     ...(flags.from !== undefined ? { from: userPath(ctx, flags.from) } : {}),
@@ -137,6 +161,7 @@ export function register(program: Command, ctx: CliContext): void {
     );
   addEnvOption(restoreCommand)
     .option("--key-file <path>", "The file with your age key")
+    .option("--from-env", "Read the age key from the OPSCREW_RECOVERY_KEY environment variable")
     .option(
       "--from <file>",
       `Restore from this copy, such as the folder copy, instead of ${COPY_PATH}`,

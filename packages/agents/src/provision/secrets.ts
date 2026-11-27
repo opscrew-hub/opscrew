@@ -1093,7 +1093,7 @@ export function deploySecretPlace(plan: DeployPlan, unprefixed: string): SecretP
  * the phase it belongs to, when one).
  */
 export async function setSecretAt(
-  deps: Pick<PhaseDeps, "audit">,
+  deps: Pick<PhaseDeps, "audit"> & Partial<Pick<PhaseDeps, "sealedSecrets">>,
   github: {
     api: Pick<GitHubClient, "setActionsSecret" | "setEnvironmentSecret">;
     owner: string;
@@ -1104,6 +1104,17 @@ export async function setSecretAt(
   phase?: PhaseName,
 ): Promise<void> {
   const { api, owner, repo } = github;
+  if (deps.sealedSecrets !== undefined) {
+    await deps.sealedSecrets.seal(
+      place.name,
+      value,
+      place.environment === undefined
+        ? { kind: "repo" }
+        : { kind: "environment", environment: place.environment },
+    );
+    await auditSecret(deps, "set", `${owner}/${repo}`, place, phase);
+    return;
+  }
   if (place.environment === undefined) {
     await api.setActionsSecret(owner, repo, place.name, value);
   } else {

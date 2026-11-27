@@ -324,7 +324,7 @@ export interface ProvisionOptions {
    * own age recipient, or the file to write a new key to (a prompt or `--key-out`), and a backup
    * recipient.
    */
-  recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+  recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "sealFirstKey" | "backup">;
   /**
    * GitHub Pages: `--pages-verification <value>`, the value of GitHub's domain verification record
    * from the GitHub account's Pages settings. It replaces the one an earlier run recorded.

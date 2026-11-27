@@ -5,6 +5,7 @@ import type {
   CommandRunner,
   FetchLike,
   Reporter,
+  SealedSecretSink,
   StreamRunner,
 } from "@opscrew/contracts";
 import type {
@@ -51,4 +52,9 @@ export interface PhaseDeps {
   interactive: boolean;
   /** OpsCrew version, written into generated files and reports. */
   version: string;
+  /**
+   * Present in GitHub Actions runs (Feature 041) when `--secrets-key-id`/`--secrets-key` are
+   * passed: secret writes seal ciphertext into `report.json` instead of calling GitHub's API.
+   */
+  sealedSecrets?: SealedSecretSink;
 }

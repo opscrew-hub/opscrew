@@ -6,6 +6,7 @@ export * from "./iac";
 export * from "./io";
 export * from "./provider";
 export * from "./registrar";
+export * from "./run-report";
 export * from "./runtime";
 export * from "./safety";
 export * from "./secops";

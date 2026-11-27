@@ -57,9 +57,14 @@ export interface RefreshRecoveryOptions {
   recipient?: () => Promise<string | undefined>;
   /**
    * The file to write a new key to (a prompt, `--key-out` or MCP `keyOut`); asked only when the
-   * first key is made. `undefined`: no file, so no key and no copy yet.
+   * first key is made. `undefined`: no file, so no key and no copy yet unless `sealFirstKey` is set.
    */
   keyOut?: () => Promise<string | undefined>;
+  /**
+   * Feature 041 (GitHub Actions runs): instead of writing the first age identity to a local file,
+   * seal it into `report.json`'s `secrets[]` (`OPSCREW_RECOVERY_KEY`) once encryption succeeds.
+   */
+  sealFirstKey?: (identity: string) => Promise<void>;
   /** A backup recipient (`age1…`) offered with the first key; `undefined` for none. */
   backup?: () => Promise<string | undefined>;
 }
@@ -310,7 +315,7 @@ export async function refreshRecoveryCopy(
   // A further app that still follows the first app's rule gets its own now.
   const newRule = inCheckout?.own !== true;
   let own: string | undefined;
-  let key: { file: string; identity: string; recipient: string } | undefined;
+  let key: { file?: string; identity: string; recipient: string; sealed?: true } | undefined;
   if (recipients === undefined) {
     const given = await options.recipient?.();
     let main: string;
@@ -319,9 +324,15 @@ export async function refreshRecoveryCopy(
       main = own;
     } else {
       const keyOut = await options.keyOut?.();
-      if (keyOut === undefined) return { changed: false, warning: NO_KEY_FILE };
-      key = { file: await keyFilePath(deps.paths, keyOut), ...newKey(deps) };
-      main = key.recipient;
+      if (keyOut !== undefined) {
+        key = { file: await keyFilePath(deps.paths, keyOut), ...newKey(deps) };
+        main = key.recipient;
+      } else if (options.sealFirstKey !== undefined) {
+        key = { sealed: true, ...newKey(deps) };
+        main = key.recipient;
+      } else {
+        return { changed: false, warning: NO_KEY_FILE };
+      }
     }
     const backup = await options.backup?.();
     recipients = [main, ...(backup !== undefined ? [checkRecipient(backup, "backup key")] : [])];
@@ -357,7 +368,13 @@ export async function refreshRecoveryCopy(
     command,
   };
   const copy = await encryptCopy(deps, bin, copyPlan);
-  const firstKey = key === undefined ? undefined : await writeKeyFile(deps, key.file, key);
+  const firstKey =
+    key === undefined || key.file === undefined
+      ? undefined
+      : await writeKeyFile(deps, key.file, { identity: key.identity, recipient: key.recipient });
+  if (key?.sealed === true && options.sealFirstKey !== undefined) {
+    await options.sealFirstKey(key.identity);
+  }
   const placed = await placeCopy(deps, copyPlan, copy, newRule);
   return {
     changed: true,

@@ -49,8 +49,7 @@ The workflow sets `OPSCREW_ACTIONS_RUN=1`, hydrates `~/.opscrew` when `secrets.O
       "needsConfirm": false,
       "costDelta": {
         "amount": 4.5,
-        "currency": "EUR",
-        "period": "monthly"
+        "currency": "EUR"
       },
       "policy": [
         {

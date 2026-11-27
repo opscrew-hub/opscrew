@@ -813,7 +813,7 @@ export async function recoveryCopyFiles(
   input: {
     github: GitHubSetup;
     plan: DeployPlan;
-    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "sealFirstKey" | "backup">;
   },
 ): Promise<RecoveryCopy> {
   const { github } = input;
@@ -1108,7 +1108,7 @@ export async function publishDeploySetup(
      * What the recovery copy's first key needs: the user's own recipient, or the file to write a
      * new key to; a backup recipient.
      */
-    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "sealFirstKey" | "backup">;
     /** The recovery copy this run already brought up to date ({@link recoveryCopyFiles}). */
     recoveryCopy?: RecoveryCopy;
   },

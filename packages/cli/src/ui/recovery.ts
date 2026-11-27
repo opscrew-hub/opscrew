@@ -68,7 +68,19 @@ export function recoveryOptions(
       },
     };
   }
-  if (!ctx.isInteractive) return {};
+  if (!ctx.isInteractive) {
+    const sealed = ctx.report?.sealedSecrets;
+    if (sealed !== undefined) {
+      return {
+        recovery: {
+          sealFirstKey: async (identity) => {
+            await sealed.seal("OPSCREW_RECOVERY_KEY", identity, { kind: "repo" });
+          },
+        },
+      };
+    }
+    return {};
+  }
   return {
     recovery: {
       recipient: () =>

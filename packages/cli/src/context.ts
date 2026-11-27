@@ -1,6 +1,7 @@
 import type { Reporter } from "@opscrew/contracts";
 import { Redactor, registerEnvSecrets } from "@opscrew/core";
 import { version as packageVersion } from "../package.json";
+import type { ReportCollector } from "./report";
 import { TerminalReporter } from "./reporter";
 
 /** Set by the bundle's build (tsup.config.ts, `scripts/build-version.mjs`); absent from source. */
@@ -34,6 +35,8 @@ export interface CliContext {
   showOnce(text: string): void;
   reporter: Reporter;
   redactor: Redactor;
+  /** Feature 041: collects structured run facts and sealed secrets when `--report` or `--secrets-key*` is set. */
+  report?: ReportCollector;
 }
 
 /** Builds the context for the real process: `process.cwd()`, `process.env` and real streams. */

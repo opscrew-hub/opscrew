@@ -115,6 +115,7 @@ export function printPlanHashes(
   plans: readonly PlannedHash[],
   approveCommand: string,
 ): void {
+  ctx.report?.recordPlannedHashes(plans, approveCommand);
   if (plans.length === 1 && plans[0] !== undefined) {
     printPlanHash(ctx, plans[0].hash, approveCommand);
     return;

@@ -257,6 +257,11 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
       },
       clock,
     );
+  const wrappedApprovals = options.wrapApprovals ? options.wrapApprovals(base, clock) : base;
+  const approvalHandler =
+    ctx.report === undefined
+      ? wrappedApprovals
+      : ctx.report.wrapApprovalHandler(wrappedApprovals);
   const built = buildPhaseDeps({
     root: ctx.cwd,
     env: ctx.env,
@@ -265,13 +270,20 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     ...(options.environment === undefined ? {} : { environment: options.environment }),
     reporter: options.reporter ?? ctx.reporter,
     redactor: ctx.redactor,
-    approvalHandler: options.wrapApprovals ? options.wrapApprovals(base, clock) : base,
+    approvalHandler,
     runner: extra.runner ?? new NodeCommandRunner(),
     fetch: extra.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     clock,
     interactive: ctx.isInteractive,
     version: ctx.version,
+    ...(ctx.report?.sealedSecrets === undefined
+      ? {}
+      : { sealedSecrets: ctx.report.sealedSecrets }),
   });
+  if (ctx.report !== undefined) {
+    ctx.report.setTarget({ app: options.app, environment: options.environment ?? "prod" });
+    ctx.report.attachCosts(built.paths.files.costs);
+  }
   const streamed = extra.streams === undefined ? built : { ...built, streams: extra.streams };
   const real = extra.fetch === undefined;
   const registryDs = extra.registryDs ?? (real ? registryDsLookup() : undefined);
