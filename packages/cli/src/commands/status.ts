@@ -13,7 +13,14 @@ import {
   tlsStatusReport,
 } from "@opscrew/agents";
 import { errorText, isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  hasRemoteAppCopies,
+  isServerlessProvider,
+  readArtifact,
+  webServers,
+  workerServers,
+} from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
@@ -56,11 +63,36 @@ async function addressLines(deps: PhaseDeps, plan: DeployPlan | undefined): Prom
     return ["", deps.redactor.redact(note)];
   }
   if (address === undefined) return [];
-  return [
-    "",
-    "Server address (kept on this computer only, never in the repository):",
-    `  ${formatServerAddress(address)}`,
+  const heading =
+    plan !== undefined && hasRemoteAppCopies(plan)
+      ? "Front server address (app; kept on this computer only, never in the repository):"
+      : "Server address (kept on this computer only, never in the repository):";
+  return ["", heading, `  ${formatServerAddress(address)}`];
+}
+
+/**
+ * Plain-English summary of multi-server web/worker copies when `plan` runs remote copies (033).
+ * Empty for single-copy plans so single-server status output stays unchanged.
+ */
+function scalingStatusLines(plan: DeployPlan): string[] {
+  if (!hasRemoteAppCopies(plan)) return [];
+  const webs = webServers(plan);
+  const policy = plan.scaling?.loadBalancer?.policy ?? "round_robin";
+  const lines = [
+    webs.length > 1
+      ? `Scaling: ${webs.length} web servers (${webs.join(", ")}; edge load balancer: ${policy}).`
+      : `Scaling: 1 web server (${webs.join(", ")}).`,
   ];
+  const workers = plan.processes.workers.filter(
+    (worker) => worker.enabled && (worker.servers?.length ?? 0) > 0,
+  );
+  if (workers.length > 0) {
+    const summary = workers
+      .map((worker) => `${worker.name} on ${workerServers(worker).join(", ")}`)
+      .join("; ");
+    lines.push(`Worker copies: ${summary}.`);
+  }
+  return lines;
 }
 
 /**
@@ -180,7 +212,7 @@ export function register(program: Command, ctx: CliContext): void {
     const imageLines =
       plan === undefined || isServerlessProvider(plan.target.provider)
         ? []
-        : [...buildStatusLines(plan), ...supplyChainLines(plan)];
+        : [...buildStatusLines(plan), ...supplyChainLines(plan), ...scalingStatusLines(plan)];
     const buildLines =
       plan === undefined
         ? []

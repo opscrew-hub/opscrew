@@ -17,10 +17,13 @@ import { exists, toPosixRelative, upperFirst } from "@opscrew/core";
 import {
   type DeployPlan,
   type DeployTarget,
+  hasRemoteAppCopies,
   isCloudProvider,
   isServerlessProvider,
   type Retarget,
   readArtifact,
+  webServers,
+  workerServers,
 } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { refuseUnconfirmedOwnServer } from "./elicitation";
@@ -96,6 +99,46 @@ export interface StatusToolOptions {
   tlsConnect?: TlsStatusOptions["tlsConnect"];
   /** The private network's WireGuard read (production: over SSH, as root through the login). */
   network?: ComponentStatusOptions["network"];
+}
+
+/** Multi-server scaling summary for `opscrew_status` when remote web or worker copies exist (033). */
+function scalingOf(plan: DeployPlan):
+  | {
+      lines: string[];
+      data: {
+        webServers: string[];
+        loadBalancer: { kind: "edge"; policy: string };
+        workerCopies: Record<string, string[]>;
+      };
+    }
+  | undefined {
+  if (!hasRemoteAppCopies(plan)) return undefined;
+  const webs = webServers(plan);
+  const policy = plan.scaling?.loadBalancer?.policy ?? "round_robin";
+  const workers = plan.processes.workers.filter(
+    (worker) => worker.enabled && (worker.servers?.length ?? 0) > 0,
+  );
+  const workerCopies = Object.fromEntries(
+    workers.map((worker) => [worker.name, workerServers(worker)]),
+  );
+  const lines = [
+    webs.length > 1
+      ? `Scaling: ${webs.length} web servers (${webs.join(", ")}; edge load balancer: ${policy}).`
+      : `Scaling: 1 web server (${webs.join(", ")}).`,
+    ...(workers.length === 0
+      ? []
+      : [
+          `Worker copies: ${workers.map((worker) => `${worker.name} on ${workerServers(worker).join(", ")}`).join("; ")}.`,
+        ]),
+  ];
+  return {
+    lines,
+    data: {
+      webServers: webs,
+      loadBalancer: { kind: "edge", policy },
+      workerCopies,
+    },
+  };
 }
 
 /**
@@ -219,6 +262,7 @@ export function registerStatusTool(
         const components =
           plan === undefined ? undefined : await componentsOf(phase, plan, options);
         const tls = plan === undefined ? undefined : await tlsOf(phase, plan, options);
+        const scaling = plan === undefined ? undefined : scalingOf(plan);
         const text = [
           `OpsCrew phases in ${paths.root}:`,
           ...lines,
@@ -230,7 +274,12 @@ export function registerStatusTool(
           // A site on Cloudflare's hosting or GitHub Pages has no image: its version instead.
           ...(plan === undefined || isServerlessProvider(plan.target.provider)
             ? []
-            : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)]),
+            : [
+                "",
+                ...buildStatusLines(plan),
+                ...supplyChainLines(plan),
+                ...(scaling?.lines ?? []),
+              ]),
           ...(components === undefined ? [] : ["", ...components.lines]),
           ...(tls === undefined ? [] : ["", ...tls.lines]),
           ...moveLines,
@@ -247,6 +296,7 @@ export function registerStatusTool(
             nextStep: step,
             move: moveData,
             ...(cloudflareMove === undefined ? {} : { cloudflareMove }),
+            ...(scaling === undefined ? {} : { scaling: scaling.data }),
             ...(components?.status === undefined ? {} : { components: components.status }),
             ...(components?.resources === undefined ? {} : { resources: components.resources }),
             ...(components?.check === undefined ? {} : { check: components.check }),

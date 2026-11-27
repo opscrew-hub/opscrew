@@ -24,6 +24,7 @@ an app yet.
 - [Several apps in one repository](several-apps.md)
 - [A second app on another app's server](shared-server.md)
 - [A server of its own for a service: split placement](split-placement.md)
+- [Scaling across servers: web and worker copies](scaling.md)
 - [Your devices on the private network](private-network.md)
 - [Portainer: a web UI for your containers](portainer.md)
 - [Buying or connecting a domain](domains.md)

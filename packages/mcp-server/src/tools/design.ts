@@ -453,12 +453,22 @@ export function registerDesignTools(
         const { chosen, plan } = result;
         const planFile = toPosixRelative(phase.paths.root, phase.paths.files.plan);
         const pending = plan.codeChanges.filter((change) => change.status === "pending");
+        // A server the user owns or their Portainer has no price: its plan is returned without `cost`.
+        const unpriced = isUnpriced(chosen);
+        const extraCount = plan.servers?.length ?? 0;
+        const savedCost =
+          extraCount > 0 && !unpriced
+            ? `${formatMoney(plan.cost.monthly)}/month total across ${extraCount + 1} servers, ${priceLabel(plan.cost)}`
+            : costText(chosen);
         const text = [
           ...notes,
-          `Saved ${planFile}: ${chosen.title} (${chosen.id}), ${costText(chosen)}.`,
+          `Saved ${planFile}: ${chosen.title} (${chosen.id}), ${savedCost}.`,
           "",
           // The image builder, deploy strategy and supply-chain settings, as design reported them.
           ...result.lines,
+          ...(result.warnings.length === 0
+            ? []
+            : ["", "Warnings:", ...result.warnings.map((warning) => `- ${warning}`)]),
           "",
           plan.codeChanges.length === 0
             ? "The app needs no code changes."
@@ -469,8 +479,6 @@ export function registerDesignTools(
           "",
           "Next: apply the pending code changes (opscrew-adapt skill) and let the user review and commit them. Nothing has been created in the cloud.",
         ].join("\n");
-        // A server the user owns or their Portainer has no price: its plan is returned without `cost`.
-        const unpriced = isUnpriced(chosen);
         return {
           text,
           data: {

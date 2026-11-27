@@ -29,6 +29,13 @@ function describeFacts(facts: ProjectFacts): string[] {
     );
     lines.push(`Environment variables: ${names.join(", ")}`);
   }
+  if ((facts.statelessIssues?.length ?? 0) > 0) {
+    const items = (facts.statelessIssues ?? []).map(
+      (issue) =>
+        `${issue.kind} (${issue.framework}${issue.file === undefined ? "" : ` in ${issue.file}`}: ${issue.evidence})`,
+    );
+    lines.push(`Stateless readiness notes (for multi-server scaling): ${items.join("; ")}`);
+  }
   return lines;
 }
 
