@@ -175,15 +175,17 @@ function openPortResults(
     ),
   ];
   if (proxiedBehindCloudflare) {
+    const activeEdge = activeEdgeProvider(deployPlan);
+    const edgeName = activeEdge === undefined ? "Cloudflare" : edgeProvider(activeEdge).displayName;
     out.push(
       result(
         "origin-cloudflare-only",
-        "Web ports accept only Cloudflare",
+        `Web ports accept only ${edgeName}`,
         "medium",
         openWebPorts.length === 0,
         openWebPorts.length === 0
-          ? "Ports 80 and 443 accept only Cloudflare's IP ranges, so attackers cannot bypass the proxy."
-          : `Ports ${openWebPorts.join(", ")} are open to everyone even though traffic should come through Cloudflare. Restrict them to Cloudflare's IP ranges.`,
+          ? `Ports 80 and 443 accept only ${edgeName}'s IP ranges, so attackers cannot bypass the proxy.`
+          : `Ports ${openWebPorts.join(", ")} are open to everyone even though traffic should come through ${edgeName}. Restrict them to ${edgeName}'s IP ranges.`,
         firewall.address,
       ),
     );

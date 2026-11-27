@@ -74,6 +74,7 @@ export * from "./portainer-target";
 export {
   thirdPartyEdgeId,
   usesCompactEdgeCidrs,
+  usesOriginMtls,
   usesSharedOriginHeader,
   webOnlyFromCloudflare,
 } from "./predicates";

@@ -40,6 +40,7 @@ variable "www" {
 variable "origin_host" {
   description = "Origin server IPv4 address or hostname reached by Gcore CDN over HTTPS."
   type        = string
+  default     = ""
 }
 
 variable "waf_custom_rules" {
@@ -76,6 +77,40 @@ variable "ipv6" {
   description = "Origin server public IPv6 address (for DNS-only AAAA record when proxied is false)."
   type        = string
   default     = null
+}
+
+variable "split_dns" {
+  description = "True when Gcore hosts DNS for a separate edge provider (refuses falling back to origin IPs)."
+  type        = bool
+  default     = false
+}
+
+variable "edge_cname_target" {
+  description = "External edge CNAME target (for example Fastly) when Gcore hosts DNS for another edge."
+  type        = string
+  default     = null
+}
+
+variable "edge_ipv4_targets" {
+  description = "External edge anycast IPv4 targets for apex A records when Gcore hosts DNS for another edge."
+  type        = list(string)
+  default     = []
+}
+
+variable "edge_ipv6_targets" {
+  description = "External edge anycast IPv6 targets for apex AAAA records when Gcore hosts DNS for another edge."
+  type        = list(string)
+  default     = []
+}
+
+variable "tls_validation_records" {
+  description = "Optional ACME DNS validation records required by an external edge provider."
+  type = map(object({
+    type  = string
+    name  = string
+    value = string
+  }))
+  default = {}
 }
 `;
 
@@ -190,7 +225,7 @@ resource "gcore_dns_zone_record" "www_cdn_cname" {
 }
 
 resource "gcore_dns_zone_record" "a" {
-  count  = var.manage_dns && !var.proxied && var.ipv4 != null ? 1 : 0
+  count  = var.manage_dns && !var.proxied && !var.split_dns && var.ipv4 != null ? 1 : 0
   zone   = var.dns_zone
   domain = var.domain
   type   = "A"
@@ -202,7 +237,7 @@ resource "gcore_dns_zone_record" "a" {
 }
 
 resource "gcore_dns_zone_record" "aaaa" {
-  count  = var.manage_dns && !var.proxied && var.ipv6 != null ? 1 : 0
+  count  = var.manage_dns && !var.proxied && !var.split_dns && var.ipv6 != null ? 1 : 0
   zone   = var.dns_zone
   domain = var.domain
   type   = "AAAA"
@@ -214,7 +249,7 @@ resource "gcore_dns_zone_record" "aaaa" {
 }
 
 resource "gcore_dns_zone_record" "www_cname" {
-  count  = var.manage_dns && !var.proxied && var.www ? 1 : 0
+  count  = var.manage_dns && !var.proxied && !var.split_dns && var.www ? 1 : 0
   zone   = var.dns_zone
   domain = "www.\${var.domain}"
   type   = "CNAME"
@@ -222,6 +257,88 @@ resource "gcore_dns_zone_record" "www_cname" {
 
   resource_record {
     content = "\${var.domain}."
+  }
+}
+
+# Split-DNS routing to a separate edge proxy (for example Fastly): anycast A/AAAA at zone apex,
+# CNAME on subdomains and www, plus ACME DNS validation records for the edge's managed TLS cert.
+resource "gcore_dns_zone_record" "edge_a" {
+  count  = var.manage_dns && !var.proxied && var.split_dns && var.domain == var.dns_zone && length(var.edge_ipv4_targets) > 0 ? 1 : 0
+  zone   = var.dns_zone
+  domain = var.domain
+  type   = "A"
+  ttl    = 300
+
+  dynamic "resource_record" {
+    for_each = var.edge_ipv4_targets
+    content {
+      content = resource_record.value
+    }
+  }
+}
+
+resource "gcore_dns_zone_record" "edge_aaaa" {
+  count  = var.manage_dns && !var.proxied && var.split_dns && var.domain == var.dns_zone && length(var.edge_ipv6_targets) > 0 ? 1 : 0
+  zone   = var.dns_zone
+  domain = var.domain
+  type   = "AAAA"
+  ttl    = 300
+
+  dynamic "resource_record" {
+    for_each = var.edge_ipv6_targets
+    content {
+      content = resource_record.value
+    }
+  }
+}
+
+resource "gcore_dns_zone_record" "edge_cname" {
+  count  = var.manage_dns && !var.proxied && var.split_dns && (var.domain != var.dns_zone || length(var.edge_ipv4_targets) == 0) ? 1 : 0
+  zone   = var.dns_zone
+  domain = var.domain
+  type   = "CNAME"
+  ttl    = 300
+
+  resource_record {
+    content = var.edge_cname_target != null ? "\${trimsuffix(var.edge_cname_target, ".")}." : ""
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.edge_cname_target != null && var.edge_cname_target != ""
+      error_message = "An external edge CNAME target is required in split-DNS mode; refusing to fall back to the origin server IP."
+    }
+  }
+}
+
+resource "gcore_dns_zone_record" "www_edge_cname" {
+  count  = var.manage_dns && !var.proxied && var.split_dns && var.www ? 1 : 0
+  zone   = var.dns_zone
+  domain = "www.\${var.domain}"
+  type   = "CNAME"
+  ttl    = 300
+
+  resource_record {
+    content = var.edge_cname_target != null ? "\${trimsuffix(var.edge_cname_target, ".")}." : ""
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.edge_cname_target != null && var.edge_cname_target != ""
+      error_message = "An external edge CNAME target is required in split-DNS mode; refusing to fall back to the origin server IP."
+    }
+  }
+}
+
+resource "gcore_dns_zone_record" "tls_validation" {
+  for_each = var.manage_dns ? var.tls_validation_records : {}
+  zone     = var.dns_zone
+  domain   = trimsuffix(each.value.name, ".")
+  type     = each.value.type
+  ttl      = 60
+
+  resource_record {
+    content = each.value.type == "CNAME" ? "\${trimsuffix(each.value.value, ".")}." : each.value.value
   }
 }
 `;

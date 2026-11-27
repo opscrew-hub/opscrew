@@ -76,6 +76,8 @@ export interface EdgeVariableSpec {
 
 /** Inputs passed from the root Terraform renderer to an edge provider's root contribution. */
 export interface EdgeRootInput {
+  /** Module name in `main.tf` (defaults to `"edge"`; `"dns"` when paired under a separate edge). */
+  moduleName?: "dns" | "edge";
   appName: string;
   environmentName?: string;
   domain: string;
@@ -89,6 +91,22 @@ export interface EdgeRootInput {
   hasDomainVar: boolean;
   /** Provider-specific DNS zone id looked up by the connector before rendering. */
   dnsZoneId?: number;
+  /**
+   * When `moduleName` is `"dns"` and a separate edge provider sits in front (`dns.edge`),
+   * Terraform expressions referencing `module.edge` for DNS routing and ACME TLS validation
+   * records so DNS points at the edge instead of the origin server's IP.
+   */
+  edgeDns?: {
+    cnameTargetExpr: string;
+    ipv4TargetsExpr?: string;
+    ipv6TargetsExpr?: string;
+    tlsValidationRecordsExpr?: string;
+  };
+  /**
+   * True when a separate `module "dns"` creates ACME DNS validation records that this edge
+   * provider's TLS subscription validation resource must wait for (`depends_on = [module.dns]`).
+   */
+  dependsOnDnsModule?: boolean;
 }
 
 /** Root Terraform module fragments contributed by an edge provider. */
@@ -107,6 +125,19 @@ export interface EdgeRootContribution {
 export interface EdgeProviderTerraformRoot {
   /** Terraform output name carrying the edge resource id for connector post-apply sync. */
   resourceIdOutput: string;
+  /** Terraform output name carrying the backend name for `mtls-client-cert` post-apply sync. */
+  backendNameOutput?: string;
+  /**
+   * Terraform module outputs exposed by an edge provider when paired with a separate DNS host
+   * (`dns.provider !== dns.edge`), so `module "dns"` routes traffic to the edge and provisions
+   * any ACME DNS validation records instead of pointing at the origin IP.
+   */
+  edgeDnsOutputs?: {
+    cnameTarget: string;
+    ipv4Targets?: string;
+    ipv6Targets?: string;
+    tlsValidationRecords?: string;
+  };
   render(input: EdgeRootInput): EdgeRootContribution;
 }
 
@@ -154,6 +185,24 @@ export interface EdgeOriginHeaderPlan {
   hash: string;
 }
 
+/** Plan-hash-bound origin mTLS change planned by an `mtls-client-cert` edge provider connector. */
+export interface EdgeOriginMtlsPlan {
+  action: "configure" | "update" | "noop";
+  serviceId: string;
+  activeVersion: number;
+  backendName: string;
+  /** Short SHA-256 fingerprint of the public client certificate PEM (never the private key). */
+  certFingerprint: string;
+  /** Short SHA-256 fingerprint of the pinned origin CA certificate PEM, when configured. */
+  caCertFingerprint?: string;
+  /** Desired origin server address when reconciling backend address alongside mTLS. */
+  originAddress?: string;
+  /** Plain-English summary shown before approval (contains no private key). */
+  summary: string;
+  /** SHA-256 hash binding approval to this exact service, version, backend, and cert fingerprints. */
+  hash: string;
+}
+
 /** Redactor hook passed to edge provider connectors so secrets never leak into errors or logs. */
 export interface EdgeRedactorLike {
   addLiteral(value: string, label: string): void;
@@ -167,6 +216,10 @@ export interface EdgeProviderConnector {
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;
   }): Promise<CredentialCheck>;
+  getIpRanges?(input: {
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<{ ipv4: string[]; ipv6: string[] }>;
   lookupDnsZone?(input: {
     apiKey: string;
     domain: string;
@@ -189,6 +242,32 @@ export interface EdgeProviderConnector {
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;
   }): Promise<{ applied: boolean }>;
+  planOriginMtls?(input: {
+    apiKey: string;
+    serviceId: string;
+    backendName: string;
+    clientCertPem: string;
+    clientKeyPem: string;
+    /** Optional PEM CA certificate pinned as `ssl_ca_cert` so the edge trusts OpsCrew's origin cert. */
+    originCaCertPem?: string;
+    /** Optional origin server address reconciled alongside mTLS (because Terraform ignores backend drift). */
+    originAddress?: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<EdgeOriginMtlsPlan>;
+  applyOriginMtls?(input: {
+    apiKey: string;
+    plan: EdgeOriginMtlsPlan;
+    clientCertPem: string;
+    clientKeyPem: string;
+    /** Optional PEM CA certificate pinned as `ssl_ca_cert` so the edge trusts OpsCrew's origin cert. */
+    originCaCertPem?: string;
+    /** Optional origin server address reconciled alongside mTLS. */
+    originAddress?: string;
+    approvedHash: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<{ applied: boolean; activatedVersion?: number }>;
 }
 
 /** Plain-English wording per OpsCrew surface. */

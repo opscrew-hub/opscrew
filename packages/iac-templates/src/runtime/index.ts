@@ -122,7 +122,13 @@ export interface RuntimeContext extends RenderContext {
 /** What the app's site files read from the {@link RuntimeContext}. */
 export type SiteContext = Pick<
   RuntimeContext,
-  "acmeEmail" | "originTls" | "additions" | "localhost" | "cloudflareRanges" | "preview"
+  | "acmeEmail"
+  | "originTls"
+  | "additions"
+  | "localhost"
+  | "cloudflareRanges"
+  | "edgeRanges"
+  | "preview"
 >;
 
 /** A Portainer target's stack holds both files: reaching these renderers with one is a bug. */
@@ -310,7 +316,7 @@ export function renderServerCompose(plan: DeployPlan, name: string): RenderedFil
  */
 export function renderRuntimeFiles(
   plan: DeployPlan,
-  ctx: Pick<RuntimeContext, "cloudflareRanges"> = {},
+  ctx: Pick<RuntimeContext, "cloudflareRanges" | "edgeRanges"> = {},
 ): RenderedFile[] {
   if (plan.target.provider === "portainer") throw notForPortainer();
   const path = `${runtimeDir(plan)}/${SERVER_CRONTAB.file}`;
@@ -320,7 +326,7 @@ export function renderRuntimeFiles(
     ...(hasCronJobs(plan) && plan.target.provider !== "localhost"
       ? [{ path, content: crontab(plan), kind: "runtime" as const }]
       : []),
-    renderEdgeCompose(plan, ctx.cloudflareRanges),
+    renderEdgeCompose(plan, ctx.edgeRanges ?? ctx.cloudflareRanges),
   ];
 }
 
@@ -340,7 +346,7 @@ function redirectedHosts(plan: DeployPlan): string[] {
  */
 function realIpRanges(plan: DeployPlan, ctx: SiteContext): readonly string[] | undefined {
   if (!trustsCompactEdgeRealIp(plan) || tunnelMode(plan)) return undefined;
-  const ranges = ctx.cloudflareRanges;
+  const ranges = ctx.edgeRanges ?? ctx.cloudflareRanges;
   if (ranges === undefined) return undefined;
   return ranges.length > 0 ? ranges : undefined;
 }

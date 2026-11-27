@@ -6,6 +6,7 @@
  * self-signed client certificate) and kept with the generated values; Cloudflare's side goes
  * through the shared Cloudflare plan; the server gets the files with the deploy.
  */
+import { createPrivateKey } from "node:crypto";
 import { posix } from "node:path";
 import {
   CLOUDFLARE_TOKEN_PAGE,
@@ -23,8 +24,10 @@ import {
   hasKeyCertSign,
   isUserFacingError,
   listText,
+  localCaCertificate,
   OpsCrewError,
   selfSignedClientCertificate,
+  signedLeafCertificate,
   writeFileAtomic,
 } from "@opscrew/core";
 import {
@@ -37,6 +40,7 @@ import {
   type RenderedFile,
   siteHosts,
   tunnelMode,
+  usesOriginMtls,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CERTIFICATE_WARN_DAYS, daysLeft } from "@opscrew/secops";
@@ -71,9 +75,17 @@ const SSL_PERMISSION = "Zone → SSL and Certificates → Edit";
 const OriginTlsValuesSchema = z.strictObject({
   /** The origin certificate's private key (PKCS#8 PEM). */
   ORIGIN_TLS_KEY: z.string().min(1).optional(),
-  /** The origin certificate Cloudflare issued (PEM). */
+  /** The origin certificate (Cloudflare Origin CA or OpsCrew per-app origin leaf PEM). */
   ORIGIN_TLS_CERT: z.string().min(1).optional(),
-  /** The client certificate's private key (PKCS#8 PEM), sent to Cloudflare once in its upload. */
+  /**
+   * Public CA certificate (PEM) that signed `ORIGIN_TLS_CERT` for `mtls-client-cert` edges such
+   * as Fastly, pinned as `ssl_ca_cert` on the edge backend so verified HTTPS succeeds behind a
+   * CIDR-locked firewall without needing public ACME HTTP-01.
+   */
+  ORIGIN_TLS_CA_CERT: z.string().min(1).optional(),
+  /** Hostnames covered by OpsCrew's locally signed `ORIGIN_TLS_CERT` (sorted). */
+  ORIGIN_TLS_HOSTNAMES: z.array(z.string()).optional(),
+  /** The client certificate's private key (PKCS#8 PEM), sent to the edge once via its API. */
   ORIGIN_PULL_KEY: z.string().min(1).optional(),
   /** The client certificate (PEM, public): `pull.pem`, the origin's trust pool. */
   ORIGIN_PULL_CERT: z.string().min(1).optional(),
@@ -201,6 +213,90 @@ export function originTlsHostnames(plan: DeployPlan): string[] {
   if (plan.dns.provider !== "cloudflare" || !plan.dns.proxied || tunnelMode(plan)) return [];
   if (plan.target.provider === "portainer" && plan.target.web.mode !== "caddy") return [];
   return [...siteHosts(plan)].sort();
+}
+
+/**
+ * The app's hostnames that get locally generated origin TLS + mTLS (`originAuth: "mtls-client-cert"`,
+ * for example Fastly): the origin serves a per-app P-256 certificate signed by a per-app CA pinned
+ * on the edge backend (`ssl_ca_cert`) and requires the per-app client certificate (`pull.pem`).
+ */
+export function originMtlsHostnames(plan: DeployPlan): string[] {
+  if (!usesOriginMtls(plan) || !plan.dns.proxied || tunnelMode(plan)) return [];
+  if (plan.target.provider === "portainer" && plan.target.web.mode !== "caddy") return [];
+  return [...siteHosts(plan)].sort();
+}
+
+/**
+ * Ensures the per-app P-256 origin server certificate (signed by an ephemeral per-app CA whose
+ * public certificate is pinned on the edge backend as `ssl_ca_cert`) and client certificate
+ * (`pull.pem`) exist in local `generated_values.json` (0600) for an `mtls-client-cert` edge.
+ */
+export async function ensureLocalOriginMtlsValues(
+  deps: Pick<PhaseDeps, "paths" | "redactor" | "clock">,
+  plan: DeployPlan,
+): Promise<OriginTlsValues> {
+  const hostnames = originMtlsHostnames(plan);
+  let values = await readOriginTlsValues(deps);
+  if (hostnames.length === 0) return values;
+
+  const openlitespeed = "edge" in plan.target && plan.target.edge === "openlitespeed";
+  let changed = false;
+
+  let clientKey = values.ORIGIN_PULL_KEY;
+  let clientCert = values.ORIGIN_PULL_CERT;
+  if (openlitespeed && clientCert !== undefined && !hasKeyCertSign(clientCert)) {
+    clientCert = undefined;
+  }
+  if (clientKey === undefined || clientCert === undefined) {
+    clientKey = newKey(deps);
+    clientCert = selfSignedClientCertificate({
+      key: clientKey,
+      commonName: `opscrew-${plan.app.name}`,
+      days: CLIENT_CERTIFICATE_DAYS,
+      now: deps.clock.now(),
+      keyCertSign: openlitespeed,
+    });
+    values = { ...values, ORIGIN_PULL_KEY: clientKey, ORIGIN_PULL_CERT: clientCert };
+    changed = true;
+  }
+
+  const originReady =
+    values.ORIGIN_TLS_KEY !== undefined &&
+    values.ORIGIN_TLS_CERT !== undefined &&
+    values.ORIGIN_TLS_CA_CERT !== undefined &&
+    sameList(values.ORIGIN_TLS_HOSTNAMES ?? [], hostnames);
+  if (!originReady) {
+    const now = deps.clock.now();
+    // Ephemeral CA key signs the origin leaf and is discarded immediately (only the public CA cert
+    // is stored so the edge backend can pin `ssl_ca_cert`).
+    const caKeyPem = newKey(deps);
+    const caKey = createPrivateKey(caKeyPem);
+    const caCert = localCaCertificate(caKey, {
+      commonName: `opscrew-${plan.app.name}-origin-ca`,
+      days: CLIENT_CERTIFICATE_DAYS,
+      now,
+    });
+    const originKeyPem = newKey(deps);
+    const originCert = signedLeafCertificate({
+      caKey,
+      caCertificate: caCert,
+      key: createPrivateKey(originKeyPem),
+      hostnames,
+      days: CLIENT_CERTIFICATE_DAYS,
+      now,
+    });
+    values = {
+      ...values,
+      ORIGIN_TLS_KEY: originKeyPem,
+      ORIGIN_TLS_CERT: originCert,
+      ORIGIN_TLS_CA_CERT: caCert,
+      ORIGIN_TLS_HOSTNAMES: hostnames,
+    };
+    changed = true;
+  }
+
+  if (changed) await writeOriginTlsValues(deps, values);
+  return values;
 }
 
 function sortedUnique(items: readonly string[]): string[] {
@@ -432,6 +528,26 @@ export function originTlsFor(
   record: SharedRecord | undefined,
   values: OriginTlsValues,
 ): { hostnames: string[] } | undefined {
+  if (usesOriginMtls(plan)) {
+    const hostnames = originMtlsHostnames(plan);
+    if (hostnames.length === 0) return undefined;
+    if (
+      values.ORIGIN_TLS_CERT === undefined ||
+      values.ORIGIN_TLS_KEY === undefined ||
+      values.ORIGIN_TLS_CA_CERT === undefined ||
+      values.ORIGIN_PULL_CERT === undefined ||
+      values.ORIGIN_PULL_KEY === undefined
+    ) {
+      return undefined;
+    }
+    if (
+      values.ORIGIN_TLS_HOSTNAMES !== undefined &&
+      !sameList(values.ORIGIN_TLS_HOSTNAMES, hostnames)
+    ) {
+      return undefined;
+    }
+    return { hostnames };
+  }
   const origin = record?.tls?.origin;
   const client = record?.tls?.client;
   const { ORIGIN_TLS_CERT: cert, ORIGIN_PULL_CERT: pull } = values;

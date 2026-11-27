@@ -42,6 +42,15 @@ const terraform = z.object({
   root: z
     .object({
       resourceIdOutput: z.string().min(1),
+      backendNameOutput: z.string().min(1).optional(),
+      edgeDnsOutputs: z
+        .object({
+          cnameTarget: z.string().min(1),
+          ipv4Targets: z.string().min(1).optional(),
+          ipv6Targets: z.string().min(1).optional(),
+          tlsValidationRecords: z.string().min(1).optional(),
+        })
+        .optional(),
       render: fn,
     })
     .optional(),
@@ -56,9 +65,12 @@ const secops = z
 const connector = z
   .object({
     verifyCredentials: fn,
+    getIpRanges: fn.optional(),
     lookupDnsZone: fn.optional(),
     planOriginHeader: fn.optional(),
     applyOriginHeader: fn.optional(),
+    planOriginMtls: fn.optional(),
+    applyOriginMtls: fn.optional(),
   })
   .optional();
 

@@ -69,6 +69,12 @@ export interface RenderContext {
    */
   cloudflareRanges?: readonly string[] | undefined;
   /**
+   * Compact-CIDR IP ranges of the active edge provider (for example Fastly's `/public-ip-list`
+   * IPv4 + IPv6 CIDRs). When set, takes precedence over `cloudflareRanges` for cloud firewalls
+   * (`http_allowed_cidrs`) and server reverse-proxy real-IP trust lists.
+   */
+  edgeRanges?: readonly string[] | undefined;
+  /**
    * The SSH port on a server the user owns: the login port in public mode (the port this computer
    * and GitHub Actions connect to, which differs from sshd's when a router forwards it), sshd's
    * port in tunnel mode (from inspection, `sshd -T`). Default 22, must be an integer 1-65535. In

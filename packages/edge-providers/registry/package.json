@@ -17,6 +17,7 @@
     "@opscrew/core": "workspace:*",
     "@opscrew/edge-provider-bunny": "workspace:*",
     "@opscrew/edge-provider-cloudflare": "workspace:*",
+    "@opscrew/edge-provider-fastly": "workspace:*",
     "@opscrew/edge-provider-gcore": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
     "zod": "^4.6.5"

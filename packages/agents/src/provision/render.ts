@@ -118,8 +118,10 @@ export async function deploymentRenderContext(
     github: { owner: string; repo: string };
     deployPublicKey: string;
     cloudflare: CloudflareSetup | undefined;
-    /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id or Gcore zone name). */
-    thirdPartyEdge?: { dnsZoneId?: number; dnsZoneName?: string } | undefined;
+    /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id, zone name, and Fastly CIDRs). */
+    thirdPartyEdge?:
+      | { dnsZoneId?: number; dnsZoneName?: string; edgeRanges?: readonly string[] }
+      | undefined;
     /** The server's address when known on this computer. */
     server?: ServerAddress | undefined;
     /** A server the user owns: see {@link OwnRenderInput}. */
@@ -173,6 +175,9 @@ export async function deploymentRenderContext(
               : { dnsZoneName: input.thirdPartyEdge.dnsZoneName }),
           },
         }
+      : {}),
+    ...(input.thirdPartyEdge?.edgeRanges !== undefined
+      ? { edgeRanges: input.thirdPartyEdge.edgeRanges }
       : {}),
     ...(cloudflare
       ? {

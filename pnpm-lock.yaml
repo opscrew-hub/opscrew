@@ -452,6 +452,18 @@ importers:
         specifier: workspace:*
         version: link:../../contracts
 
+  packages/edge-providers/fastly:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
   packages/edge-providers/gcore:
     dependencies:
       '@opscrew/contracts':
@@ -478,6 +490,9 @@ importers:
       '@opscrew/edge-provider-cloudflare':
         specifier: workspace:*
         version: link:../cloudflare
+      '@opscrew/edge-provider-fastly':
+        specifier: workspace:*
+        version: link:../fastly
       '@opscrew/edge-provider-gcore':
         specifier: workspace:*
         version: link:../gcore

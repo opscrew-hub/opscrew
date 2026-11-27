@@ -114,7 +114,7 @@ function moveNote(to: "provider" | "server"): string {
 
 /** CIDRs allowed to reach ports 80/443: compact edge CIDRs when proxied and restricted; open for dynamic-ips edges. */
 function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
-  const ranges = ctx.cloudflareRanges;
+  const ranges = ctx.edgeRanges ?? ctx.cloudflareRanges;
   if (usesCompactEdgeCidrs(plan) && ranges && ranges.length > 0) return [...ranges];
   return OPEN_TO_ALL;
 }
@@ -313,44 +313,102 @@ function adoptingImports(shape: RootShape, ctx: RenderContext): string[] {
   ];
 }
 
-function thirdPartyEdgeRoot(
+interface ThirdPartyEdgeEntry {
+  def: ReturnType<typeof edgeProvider>;
+  contribution: EdgeRootContribution;
+}
+
+function thirdPartyEdgeRoots(
   plan: DeployPlan,
   shape: RootShape,
   ctx: RenderContext,
-  hasDomainVar: boolean,
-):
-  | {
-      def: ReturnType<typeof edgeProvider>;
-      contribution: EdgeRootContribution;
-    }
-  | undefined {
-  const id = thirdPartyEdgeId(plan);
-  if (id === undefined || plan.dns.domain === undefined) return undefined;
-  const def = edgeProvider(id);
-  const root = def.terraform.root;
-  if (root === undefined) return undefined;
+  hasCloudflareDomainVar: boolean,
+): ThirdPartyEdgeEntry[] {
+  if (plan.dns.domain === undefined) return [];
   const { ipv4, ipv6 } = addressesOf(shape.live);
-  return {
-    def,
-    contribution: root.render({
-      appName: plan.app.name,
-      ...(plan.environment?.name === undefined ? {} : { environmentName: plan.environment.name }),
-      domain: plan.dns.domain,
-      ...(plan.dns.zone !== undefined
-        ? { zone: plan.dns.zone }
-        : ctx.edge?.dnsZoneName !== undefined
-          ? { zone: ctx.edge.dnsZoneName }
-          : {}),
-      www: plan.dns.www,
-      proxied: plan.dns.proxied,
-      manageDns: plan.dns.provider === id,
-      wafCustomRules: plan.security.wafCustomRules,
-      ipv4Expr: ipv4,
-      ipv6Expr: ipv6,
-      hasDomainVar,
-      ...(ctx.edge?.dnsZoneId === undefined ? {} : { dnsZoneId: ctx.edge.dnsZoneId }),
-    }),
-  };
+  const entries: ThirdPartyEdgeEntry[] = [];
+  let hasDomainVar = hasCloudflareDomainVar;
+  const effectiveZone = plan.dns.zone ?? ctx.edge?.dnsZoneName;
+
+  const dnsId =
+    plan.dns.provider !== "cloudflare" && plan.dns.provider !== "none"
+      ? plan.dns.provider
+      : undefined;
+  const edgeId = thirdPartyEdgeId(plan);
+  const splitDns = dnsId !== undefined && edgeId !== undefined && dnsId !== edgeId;
+  const edgeDef = edgeId === undefined ? undefined : edgeProvider(edgeId);
+
+  if (splitDns) {
+    const dnsDef = edgeProvider(dnsId);
+    const dnsOutputs = edgeDef?.terraform.root?.edgeDnsOutputs;
+    const edgeDns =
+      dnsOutputs === undefined
+        ? undefined
+        : {
+            cnameTargetExpr: `module.edge.${dnsOutputs.cnameTarget}`,
+            ...(dnsOutputs.ipv4Targets === undefined
+              ? {}
+              : { ipv4TargetsExpr: `module.edge.${dnsOutputs.ipv4Targets}` }),
+            ...(dnsOutputs.ipv6Targets === undefined
+              ? {}
+              : { ipv6TargetsExpr: `module.edge.${dnsOutputs.ipv6Targets}` }),
+            ...(dnsOutputs.tlsValidationRecords === undefined
+              ? {}
+              : { tlsValidationRecordsExpr: `module.edge.${dnsOutputs.tlsValidationRecords}` }),
+          };
+    if (dnsDef.terraform.root !== undefined) {
+      entries.push({
+        def: dnsDef,
+        contribution: dnsDef.terraform.root.render({
+          moduleName: "dns",
+          appName: plan.app.name,
+          ...(plan.environment?.name === undefined
+            ? {}
+            : { environmentName: plan.environment.name }),
+          domain: plan.dns.domain,
+          ...(effectiveZone === undefined ? {} : { zone: effectiveZone }),
+          www: plan.dns.www,
+          proxied: false,
+          manageDns: true,
+          wafCustomRules: false,
+          ipv4Expr: ipv4,
+          ipv6Expr: ipv6,
+          hasDomainVar,
+          ...(ctx.edge?.dnsZoneId === undefined ? {} : { dnsZoneId: ctx.edge.dnsZoneId }),
+          ...(edgeDns === undefined ? {} : { edgeDns }),
+        }),
+      });
+      hasDomainVar = true;
+    }
+  }
+
+  if (edgeDef !== undefined) {
+    if (edgeDef.terraform.root !== undefined) {
+      entries.push({
+        def: edgeDef,
+        contribution: edgeDef.terraform.root.render({
+          moduleName: "edge",
+          appName: plan.app.name,
+          ...(plan.environment?.name === undefined
+            ? {}
+            : { environmentName: plan.environment.name }),
+          domain: plan.dns.domain,
+          ...(effectiveZone === undefined ? {} : { zone: effectiveZone }),
+          www: plan.dns.www,
+          proxied: plan.dns.proxied,
+          manageDns: !splitDns && plan.dns.provider === edgeId,
+          wafCustomRules: plan.security.wafCustomRules,
+          ipv4Expr: ipv4,
+          ipv6Expr: ipv6,
+          hasDomainVar,
+          ...(ctx.edge?.dnsZoneId === undefined ? {} : { dnsZoneId: ctx.edge.dnsZoneId }),
+          ...(splitDns ? { dependsOnDnsModule: true } : {}),
+        }),
+      });
+    }
+  }
+
+  return entries;
 }
 
 function mainTf(
@@ -359,16 +417,14 @@ function mainTf(
   ctx: RenderContext,
   pieces: TunnelPieces | undefined,
   checkKey: boolean,
-  edgeRoot:
-    | { def: ReturnType<typeof edgeProvider>; contribution: EdgeRootContribution }
-    | undefined,
+  edgeRoots: readonly ThirdPartyEdgeEntry[],
 ): string {
   const lines = [rootHeader(plan), ""];
   if (shape.moving) lines.push(moveNote(shape.addresses.length > 0 ? "server" : "provider"), "");
   for (const provider of shape.providers) lines.push(...providerBlock(provider));
   const zone = serverZoneUse(plan);
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
-  if (edgeRoot !== undefined) lines.push(...edgeProviderBlock(edgeRoot.def));
+  for (const entry of edgeRoots) lines.push(...edgeProviderBlock(entry.def));
   const borrowed = borrowedShared(shape.extras, shape.shared);
   for (const server of shape.servers) {
     const previous = server.slot === "server_previous";
@@ -414,8 +470,8 @@ function mainTf(
     lines.push(...dnsModule(zone, ipv4, ipv6, ipv6Record(plan, shape.live)));
     lines.push(...adoptingImports(shape, ctx));
   }
-  if (edgeRoot !== undefined) {
-    lines.push(...edgeRoot.contribution.mainLines);
+  for (const entry of edgeRoots) {
+    lines.push(...entry.contribution.mainLines);
   }
   lines.push(...(previewsCertificatePack(plan)?.main ?? []));
   if (pieces) lines.push(...pieces.main);
@@ -430,9 +486,7 @@ function variables(
   shape: RootShape,
   pieces: TunnelPieces | undefined,
   checkKey: boolean,
-  edgeRoot:
-    | { def: ReturnType<typeof edgeProvider>; contribution: EdgeRootContribution }
-    | undefined,
+  edgeRoots: readonly ThirdPartyEdgeEntry[],
 ): VariableSpec[] {
   const base: VariableSpec[] = [
     APP_NAME_VARIABLE,
@@ -459,7 +513,7 @@ function variables(
   return [
     ...base,
     ...(zone !== undefined ? zoneVariables(zone) : []),
-    ...(edgeRoot !== undefined ? edgeRoot.contribution.variables : []),
+    ...edgeRoots.flatMap((entry) => entry.contribution.variables),
     ...(pieces?.variables ?? []),
   ];
 }
@@ -551,9 +605,7 @@ function outputsTf(
   plan: DeployPlan,
   shape: RootShape,
   pieces: TunnelPieces | undefined,
-  edgeRoot:
-    | { def: ReturnType<typeof edgeProvider>; contribution: EdgeRootContribution }
-    | undefined,
+  edgeRoots: readonly ThirdPartyEdgeEntry[],
 ): string {
   const { live } = shape;
   const { ipv4, ipv6 } = addressesOf(live);
@@ -561,7 +613,7 @@ function outputsTf(
   const url =
     serverZoneUse(plan) === "records"
       ? "module.dns.url"
-      : edgeRoot !== undefined
+      : edgeRoots.length > 0
         ? "module.edge.url"
         : `"http://\${${ipv4}}"`;
   return [
@@ -577,7 +629,7 @@ function outputsTf(
         ]
       : []),
     ...output("url", url),
-    ...(edgeRoot !== undefined ? edgeRoot.contribution.outputLines : []),
+    ...edgeRoots.flatMap((entry) => entry.contribution.outputLines),
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
     ...wantedFirewallsOutput(shape),
@@ -602,27 +654,33 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   if (shape.servers.length > 0) values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   const checkKey = ctx.checkKeyLine !== undefined;
   const zone = serverZoneUse(plan);
-  const edgeRoot = thirdPartyEdgeRoot(plan, shape, ctx, zone === "records");
-  const edgeModuleName = edgeRoot?.def.terraform.module?.name;
+  const edgeRoots = thirdPartyEdgeRoots(plan, shape, ctx, zone === "records");
+  const edgeModuleNames = edgeRoots.flatMap((entry) =>
+    entry.def.terraform.module === undefined ? [] : [entry.def.terraform.module.name],
+  );
+  const edgeTfvars = Object.assign(
+    {},
+    ...edgeRoots.map((entry) => entry.contribution.tfvars),
+  ) as Record<string, unknown>;
   return {
     versions: versionsTf(plan, [
       ...shape.providers.map((provider) => provider.terraform.provider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
-      ...(edgeRoot !== undefined ? [edgeRoot.def.terraform.provider] : []),
+      ...edgeRoots.map((entry) => entry.def.terraform.provider),
     ]),
-    main: mainTf(plan, shape, ctx, pieces, checkKey, edgeRoot),
-    variables: variablesTf(plan, variables(plan, shape, pieces, checkKey, edgeRoot)),
-    outputs: outputsTf(plan, shape, pieces, edgeRoot),
+    main: mainTf(plan, shape, ctx, pieces, checkKey, edgeRoots),
+    variables: variablesTf(plan, variables(plan, shape, pieces, checkKey, edgeRoots)),
+    outputs: outputsTf(plan, shape, pieces, edgeRoots),
     tfvars: {
       ...values,
       ...(zone !== undefined ? zoneTfvars(plan, ctx, zone) : {}),
-      ...(edgeRoot !== undefined ? edgeRoot.contribution.tfvars : {}),
+      ...edgeTfvars,
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
       ...shape.providers.map((provider) => provider.terraform.module.name),
       ...(zone !== undefined ? ["cloudflare-dns"] : []),
-      ...(edgeModuleName !== undefined ? [edgeModuleName] : []),
+      ...edgeModuleNames,
       ...(pieces?.modules ?? []),
     ],
   };

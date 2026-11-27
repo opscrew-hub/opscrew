@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/edge-provider-fastly",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fastly: edge-only VCL proxy provider definition, typed API client, and Terraform module (ADR 0038).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

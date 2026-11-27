@@ -58,3 +58,14 @@ export function usesSharedOriginHeader(plan: DeployPlan): boolean {
   if (edgeId === undefined || plan.security.httpAllowedFrom !== "edge") return false;
   return edgeProvider(edgeId).capabilities.originAuth === "shared-header";
 }
+
+/**
+ * True when the active edge provider authenticates origin requests with a per-app mTLS client
+ * certificate (`originAuth: "mtls-client-cert"`, for example Fastly), reusing `pull.pem` and
+ * `OPSCREW_ORIGIN_TLS` on the server proxy.
+ */
+export function usesOriginMtls(plan: DeployPlan): boolean {
+  const edgeId = activeEdgeProvider(plan);
+  if (edgeId === undefined || plan.security.httpAllowedFrom !== "edge") return false;
+  return edgeProvider(edgeId).capabilities.originAuth === "mtls-client-cert";
+}

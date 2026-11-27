@@ -40,6 +40,7 @@ variable "www" {
 variable "origin_host" {
   description = "Origin server IPv4 address or hostname reached by Bunny.net over verified HTTPS."
   type        = string
+  default     = ""
 }
 
 variable "waf_custom_rules" {
@@ -88,6 +89,34 @@ variable "ipv6" {
   description = "Origin server public IPv6 address (for DNS-only AAAA record when proxied is false)."
   type        = string
   default     = null
+}
+
+variable "dns_zone_name" {
+  description = "DNS zone name (for example example.com) used to derive relative ACME challenge names."
+  type        = string
+  default     = null
+}
+
+variable "split_dns" {
+  description = "True when Bunny hosts DNS for a separate edge provider (refuses falling back to origin IPs)."
+  type        = bool
+  default     = false
+}
+
+variable "edge_cname_target" {
+  description = "External edge CNAME/Flatten target (for example Fastly) when Bunny hosts DNS for another edge."
+  type        = string
+  default     = null
+}
+
+variable "tls_validation_records" {
+  description = "Optional ACME DNS validation records required by an external edge provider."
+  type = map(object({
+    type  = string
+    name  = string
+    value = string
+  }))
+  default = {}
 }
 `;
 
@@ -183,7 +212,7 @@ resource "bunnynet_dns_record" "www_pullzone" {
 }
 
 resource "bunnynet_dns_record" "a" {
-  count   = var.manage_dns && !var.proxied && var.ipv4 != null ? 1 : 0
+  count   = var.manage_dns && !var.proxied && !var.split_dns && var.ipv4 != null ? 1 : 0
   zone    = var.dns_zone_id
   name    = var.record_name
   type    = "A"
@@ -192,7 +221,7 @@ resource "bunnynet_dns_record" "a" {
 }
 
 resource "bunnynet_dns_record" "aaaa" {
-  count   = var.manage_dns && !var.proxied && var.ipv6 != null ? 1 : 0
+  count   = var.manage_dns && !var.proxied && !var.split_dns && var.ipv6 != null ? 1 : 0
   zone    = var.dns_zone_id
   name    = var.record_name
   type    = "AAAA"
@@ -201,12 +230,56 @@ resource "bunnynet_dns_record" "aaaa" {
 }
 
 resource "bunnynet_dns_record" "www_cname" {
-  count   = var.manage_dns && !var.proxied && var.www ? 1 : 0
+  count   = var.manage_dns && !var.proxied && !var.split_dns && var.www ? 1 : 0
   zone    = var.dns_zone_id
   name    = var.www_record_name
   type    = "CNAME"
   value   = var.domain
   enabled = true
+}
+
+# Split-DNS routing to a separate edge proxy (for example Fastly): Bunny Flatten at apex, CNAME on
+# subdomains, plus ACME DNS validation records for the edge's managed TLS certificate.
+resource "bunnynet_dns_record" "edge_target" {
+  count   = var.manage_dns && !var.proxied && var.split_dns ? 1 : 0
+  zone    = var.dns_zone_id
+  name    = var.record_name
+  type    = var.record_name == "" ? "Flatten" : "CNAME"
+  value   = var.edge_cname_target != null ? trimsuffix(var.edge_cname_target, ".") : ""
+  enabled = true
+
+  lifecycle {
+    precondition {
+      condition     = var.edge_cname_target != null && var.edge_cname_target != ""
+      error_message = "An external edge CNAME target is required in split-DNS mode; refusing to fall back to the origin server IP."
+    }
+  }
+}
+
+resource "bunnynet_dns_record" "www_edge_target" {
+  count   = var.manage_dns && !var.proxied && var.split_dns && var.www ? 1 : 0
+  zone    = var.dns_zone_id
+  name    = var.www_record_name
+  type    = "CNAME"
+  value   = var.edge_cname_target != null ? trimsuffix(var.edge_cname_target, ".") : ""
+  enabled = true
+
+  lifecycle {
+    precondition {
+      condition     = var.edge_cname_target != null && var.edge_cname_target != ""
+      error_message = "An external edge CNAME target is required in split-DNS mode; refusing to fall back to the origin server IP."
+    }
+  }
+}
+
+resource "bunnynet_dns_record" "tls_validation" {
+  for_each = var.manage_dns ? var.tls_validation_records : {}
+  zone     = var.dns_zone_id
+  name     = var.dns_zone_name != null ? trimsuffix(trimsuffix(each.value.name, "."), ".\${var.dns_zone_name}") : trimsuffix(each.value.name, ".")
+  type     = each.value.type
+  value    = trimsuffix(each.value.value, ".")
+  ttl      = 60
+  enabled  = true
 }
 `;
 

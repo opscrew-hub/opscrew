@@ -1,15 +1,17 @@
 import { OpsCrewError } from "@opscrew/core";
 import { definition as bunny } from "@opscrew/edge-provider-bunny";
 import { definition as cloudflare } from "@opscrew/edge-provider-cloudflare";
+import { definition as fastly } from "@opscrew/edge-provider-fastly";
 import { definition as gcore } from "@opscrew/edge-provider-gcore";
 import { describe, expect, it } from "vitest";
 import { validateEdgeProvider } from "./validate";
 
 describe("validateEdgeProvider", () => {
-  it("accepts the built-in Cloudflare, Bunny.net, and Gcore definitions", () => {
+  it("accepts the built-in Cloudflare, Bunny.net, Gcore, and Fastly definitions", () => {
     expect(validateEdgeProvider(cloudflare)).toBe(cloudflare);
     expect(validateEdgeProvider(bunny)).toBe(bunny);
     expect(validateEdgeProvider(gcore)).toBe(gcore);
+    expect(validateEdgeProvider(fastly)).toBe(fastly);
   });
 
   it("refuses a wrong contract version", () => {

@@ -1982,7 +1982,7 @@
         },
         "edge": {
           "type": "string",
-          "enum": ["bunny", "gcore"]
+          "enum": ["bunny", "gcore", "fastly"]
         },
         "domain": {
           "type": "string",

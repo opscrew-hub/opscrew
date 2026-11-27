@@ -156,4 +156,49 @@ describe("plan-schema DNS host and edge provider rules (036 PR 2 & PR 3)", () =>
       "cloud VPS targets",
     );
   });
+
+  it("accepts Fastly edge with Bunny or Gcore DNS and refuses Fastly with dns.provider: none or cloudflare", () => {
+    for (const provider of ["bunny", "gcore"] as const) {
+      const plan = DeployPlanSchema.parse(
+        basePlan({
+          provider,
+          edge: "fastly",
+          domain: "shop.example.com",
+          zone: "example.com",
+          proxied: true,
+          www: true,
+        }),
+      );
+      expect(plan.dns.edge).toBe("fastly");
+      expect(plan.security.httpAllowedFrom).toBe("edge");
+      expect(activeEdgeProvider(plan)).toBe("fastly");
+    }
+
+    const withCloudflare = DeployPlanSchema.safeParse(
+      basePlan({
+        provider: "cloudflare",
+        edge: "fastly",
+        domain: "shop.example.com",
+        proxied: true,
+      }),
+    );
+    expect(withCloudflare.success).toBe(false);
+    expect(withCloudflare.error?.issues[0]?.message).toContain(
+      'cannot be combined with dns.provider: "cloudflare" yet: set dns.provider to "bunny" or "gcore"',
+    );
+
+    const withNone = DeployPlanSchema.safeParse(
+      basePlan({
+        provider: "none",
+        edge: "fastly",
+        domain: "shop.example.com",
+        proxied: true,
+      }),
+    );
+    expect(withNone.success).toBe(false);
+    expect(withNone.error?.issues[0]?.message).toContain(
+      'Fastly does not host DNS, so set dns.provider to "bunny" or "gcore"',
+    );
+    expect(withNone.error?.issues[0]?.message).not.toContain('"cloudflare"');
+  });
 });

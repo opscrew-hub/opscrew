@@ -30,6 +30,7 @@ an app yet.
 - [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
 - [Bunny.net edge proxy and DNS](bunny.md)
 - [Gcore edge proxy and DNS](gcore.md)
+- [Fastly edge proxy](fastly.md)
 
 ### The providers, for tools
 

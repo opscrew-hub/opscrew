@@ -1180,7 +1180,7 @@ function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx):
   if (isServerlessTarget(target)) return;
   const ownTunnel = target.provider === "own" && target.access === "tunnel";
   const portainerTunnel = target.provider === "portainer" && target.web?.mode === "tunnel";
-  const served = dns.proxied || ownTunnel || portainerTunnel;
+  const served = (dns.proxied && dns.edge === undefined) || ownTunnel || portainerTunnel;
   const instead = ownTunnel
     ? 'if the internet can reach your server, serve it directly with DNS only instead of the tunnel (target.access "public", dns.proxied false)'
     : portainerTunnel
@@ -2369,12 +2369,12 @@ const DeployPlanFieldsSchema = z.strictObject({
   dns: z.strictObject({
     provider: z.enum(["cloudflare", "bunny", "gcore", "none"]),
     /**
-     * Separate edge proxy in front of `dns.provider` (`"bunny" | "gcore"` in PR 3; no
+     * Separate edge proxy in front of `dns.provider` (`"bunny" | "gcore" | "fastly"`; no
      * `"cloudflare"` value: absent with `proxied: true` means `dns.provider`'s own proxy). Refused
-     * without `proxied: true`.
+     * without `proxied: true`; `"fastly"` is also refused with `dns.provider: "none"`.
      */
     edge: z
-      .enum(["bunny", "gcore"], {
+      .enum(["bunny", "gcore", "fastly"], {
         error: (issue) =>
           issue.input === "cloudflare"
             ? 'must not be "cloudflare": leave dns.edge unset when using Cloudflare as both DNS and edge (dns.provider: "cloudflare" with dns.proxied: true)'
@@ -2551,7 +2551,10 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     ctx.addIssue({
       code: "custom",
       path: ["dns", "edge"],
-      message: `cannot be combined with dns.provider: "cloudflare" yet: use dns.provider: "${plan.dns.edge}" or dns.provider: "none" with dns.edge: "${plan.dns.edge}"`,
+      message:
+        plan.dns.edge === "fastly"
+          ? 'cannot be combined with dns.provider: "cloudflare" yet: set dns.provider to "bunny" or "gcore"'
+          : `cannot be combined with dns.provider: "cloudflare" yet: use dns.provider: "${plan.dns.edge}" or dns.provider: "none" with dns.edge: "${plan.dns.edge}"`,
     });
   }
   if (plan.dns.edge !== undefined && !plan.dns.proxied) {
@@ -2579,6 +2582,14 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
       code: "custom",
       path: plan.dns.edge !== undefined ? ["dns", "edge"] : ["dns", "provider"],
       message: `"${thirdPartyEdgeOrDns}" is currently supported only on cloud VPS targets, not "${plan.target.provider}"`,
+    });
+  }
+  if (plan.dns.edge === "fastly" && plan.dns.provider === "none") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "provider"],
+      message:
+        'cannot be "none" when dns.edge is "fastly": Fastly does not host DNS, so set dns.provider to "bunny" or "gcore"',
     });
   }
   if (
@@ -3081,7 +3092,7 @@ export type GrafanaCloudSettings = NonNullable<Observability["grafanaCloud"]>;
 export type MonitoringSettings = z.output<typeof MonitoringSchema>;
 
 /** Edge proxy provider ids supported by `opscrew/plan.yaml`. */
-export type EdgeProviderId = "cloudflare" | "bunny" | "gcore";
+export type EdgeProviderId = "cloudflare" | "bunny" | "gcore" | "fastly";
 
 /**
  * The edge proxy provider serving the app for `plan`, or `undefined` when traffic is not proxied
