@@ -214,6 +214,9 @@ describe("033 copy-server deploy secrets & serial rolling workflow (T3307)", () 
         expect(res.status, res.stderr).toBe(0);
       }
       const webSwitch = copyServerSwitchCommands(plan, "web-2").join("\n");
+      expect(webSwitch).toContain("docker compose port app-proxy 80");
+      expect(webSwitch).toContain("kamal-proxy list");
+      expect(webSwitch).toContain("if command -v curl > /dev/null 2>&1; then");
       expect(webSwitch).toContain("http://10.200.0.2:18090/api/health");
       expect(webSwitch).toContain("Host: shop.example.com");
       expect(webSwitch).not.toContain("opscrew-edge");
@@ -223,6 +226,45 @@ describe("033 copy-server deploy secrets & serial rolling workflow (T3307)", () 
       expect(workerSwitch).toContain("docker compose up -d --no-deps jobs");
     },
   );
+
+  it("refuses database-mutating rollbacks in switchCommands and rolls back copies even when DB put-back gets stuck", () => {
+    const base = scaledPlan({ withWorkerCopy: true });
+    const withRemoteDb = DeployPlanSchema.parse({
+      ...base,
+      deploy: { ...base.deploy, snapshots: true },
+      servers: [
+        ...(base.servers ?? []),
+        {
+          name: "db-box",
+          target: {
+            provider: "hetzner",
+            mode: "vps-compose",
+            location: "fsn1",
+            serverType: "cx22",
+            backups: false,
+          },
+        },
+      ],
+      services: base.services.map((s) => ({ ...s, server: "db-box" })),
+      network: {
+        range: base.network?.range ?? "10.200.0.0/24",
+        members: [
+          ...(base.network?.members ?? []),
+          { name: "db-box", address: "10.200.0.4", port: 51820, publicKey: WG_KEY(4) },
+        ],
+      },
+    });
+    const steps = deploySteps(withRemoteDb);
+    const start = steps.find((s) => s.id === "start");
+    expect(start?.run).toContain(
+      "This environment runs copies across several servers, which would keep serving while the database changes",
+    );
+    const rollback = steps.find((s) => s.name === "Roll back to the previous version");
+    expect(rollback?.run).toContain("copy_server_sh()");
+    // Copy rollback runs both on the stuck DB put-back path and on the normal rollback path.
+    const matches = rollback?.run?.match(/copy_server_sh "\$server"/g) ?? [];
+    expect(matches.length).toBe(2);
+  });
 });
 
 describe("033 secret rotation across copy servers (T3308)", () => {

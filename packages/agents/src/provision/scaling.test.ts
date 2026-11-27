@@ -6,14 +6,17 @@ import {
   copyServerEnvSecrets,
   publishedOnNetwork,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, DeployPlanSchema } from "@opscrew/plan-schema";
+import { APP_SERVER, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { pgBouncerScaling } from "../design/scaling";
 import { networkFilterRules } from "../network";
+import { databaseStep } from "../rollback/database";
 import { serverRuns, serviceSteps } from "../rotate/plan";
 import { assembleAppEnv, copyServerAppEnv } from "../shared";
+import { restoreSnapshot } from "../snapshot/restore";
 import { componentStatus, componentStatusLines } from "../status/components";
 import { serviceWords } from "../status/network";
-import { testPlan } from "../testing";
+import { createTestPhaseDeps, testPlan } from "../testing";
 import { deploySecretNames, deploySecrets } from "./secrets";
 
 const WG_KEY = (n: number) => `${String(n).repeat(42)}A=`;
@@ -223,5 +226,70 @@ describe("033 status, verify & multi-copy rotation (T3312)", () => {
     expect(runs[0]?.script).toContain("begin | finish)");
     expect(runs[1]?.script).toContain("begin | switch | finish)");
     expect(runs[2]?.script).toContain("begin | finish)");
+  });
+
+  it("enables PgBouncer on PostgreSQL for worker-only remote copies too (033)", () => {
+    const base = scaledPlan();
+    const { servers: _webServers, ...appWithoutServers } = base.app;
+    const workerOnly = DeployPlanSchema.parse({
+      ...base,
+      app: appWithoutServers,
+      servers: (base.servers ?? []).filter((s) => s.name === "worker-1"),
+      network: {
+        range: base.network?.range ?? "10.200.4.0/24",
+        members: (base.network?.members ?? []).filter((m) => m.name !== "web-2"),
+      },
+    });
+    const out = pgBouncerScaling(workerOnly);
+    expect(out.plan.services[0]?.options).toMatchObject({
+      logins: "separate",
+      pooler: "pgbouncer",
+    });
+    expect(out.lines[0]).toContain("2 app/worker servers");
+  });
+
+  it("refuses in-place snapshot restores and database-mutating rollbacks while remote copies run (033)", async () => {
+    const deps = await createTestPhaseDeps();
+    const base = scaledPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      deploy: { ...base.deploy, snapshots: true },
+    });
+    await writeArtifact("plan", deps.paths.files.plan, plan);
+
+    await expect(restoreSnapshot(deps, "20261127T120000Z")).rejects.toThrow(
+      /runs app copies on web-2 and worker-1, which would keep serving and writing to the database/,
+    );
+
+    const run = {
+      deps,
+      plan,
+      environment: "prod",
+      flags: "",
+      command: "opscrew rollback",
+      options: { database: "snapshot" as const },
+      services: {},
+    };
+    await expect(
+      databaseStep(run, {
+        current:
+          "ghcr.io/a/b@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        target:
+          "ghcr.io/a/b@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        words: "the earlier version",
+      }),
+    ).rejects.toThrow(/runs app copies on web-2 and worker-1/);
+
+    const keepStep = await databaseStep(
+      { ...run, options: { database: "keep" } },
+      {
+        current:
+          "ghcr.io/a/b@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        target:
+          "ghcr.io/a/b@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        words: "the earlier version",
+      },
+    );
+    expect(keepStep.choice).toBe("keep");
   });
 });

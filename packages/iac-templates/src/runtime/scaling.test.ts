@@ -162,6 +162,19 @@ describe("feature 033 (T3306): multi-upstream load balancing across Caddy, nginx
     expect(site).toContain("max_fails 2");
   });
 
+  it("uses Caddy client_ip_hash when ip_hash is selected behind Cloudflare real-IP", () => {
+    const base = scaledPlan({ edge: "caddy", policy: "ip_hash" });
+    const proxied = DeployPlanSchema.parse({
+      ...base,
+      dns: { ...base.dns, proxied: true },
+    });
+    const site =
+      renderEdgeSite(proxied, testContext({ cloudflareRanges: ["173.245.48.0/20"] }))[0]?.content ??
+      "";
+    expect(site).toContain("lb_policy client_ip_hash");
+    expect(site).not.toContain("lb_policy ip_hash");
+  });
+
   it("renders nginx upstream with policy, local + WG copy servers, and proxy_next_upstream", () => {
     const plan = scaledPlan({ edge: "nginx", policy: "ip_hash" });
     const site = renderEdgeSite(plan, testContext())[0]?.content ?? "";

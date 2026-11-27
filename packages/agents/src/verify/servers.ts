@@ -12,7 +12,7 @@ import type { ReadNetworkServices } from "../network";
 import { checkResult } from "../shared";
 import { appServers } from "../shared/servers";
 import { handshakeText, notReadText, serviceWords } from "../status/network";
-import { isPublished, readLinks, readPublishedPorts, serverShell } from "../status/servers";
+import { isPublished, readLinks, readServerContainers, serverShell } from "../status/servers";
 
 /**
  * The checks of every server of a plan with a private network; none without one. `remote` and
@@ -35,10 +35,13 @@ export async function serverChecks(
       id: `server-${server}-reachable`,
       title: `Server ${server} answers over SSH`,
     };
-    let published: Awaited<ReturnType<typeof readPublishedPorts>>;
+    let published: Awaited<ReturnType<typeof readServerContainers>>["published"];
+    let runningServices: Set<string>;
     try {
       const { docker } = await serverShell(deps, plan, server, options);
-      published = await readPublishedPorts(docker, plan.app.name);
+      const read = await readServerContainers(docker, plan.app.name);
+      published = read.published;
+      runningServices = read.services;
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
       unreachable.add(server);
@@ -79,6 +82,48 @@ export async function serverChecks(
               },
         ),
       );
+    }
+    if (server !== APP_SERVER && (plan.app.servers?.includes(server) ?? false)) {
+      const up = runningServices.has("app");
+      checks.push(
+        checkResult(
+          `server-${server}-web-copy`,
+          `Web copy on server ${server} is running`,
+          "high",
+          up ? "pass" : "fail",
+          up
+            ? `The web copy (app) is running on server ${server}.`
+            : `The web copy (app) is not running on server ${server}, so the load balancer cannot route traffic there.`,
+          up
+            ? {}
+            : {
+                remediation: `Run the deploy workflow (or check \`opscrew logs${flag}\` and \`opscrew status${flag}\`), then run \`opscrew verify${flag}\` again.`,
+              },
+        ),
+      );
+    }
+    if (server !== APP_SERVER) {
+      for (const worker of plan.processes.workers) {
+        if (!worker.enabled || !(worker.servers?.includes(server) ?? false)) continue;
+        const serviceName = worker.name;
+        const up = runningServices.has(serviceName);
+        checks.push(
+          checkResult(
+            `server-${server}-worker-${worker.name}`,
+            `Worker copy ${worker.name} on server ${server} is running`,
+            "high",
+            up ? "pass" : "fail",
+            up
+              ? `Worker copy ${worker.name} (${serviceName}) is running on server ${server}.`
+              : `Worker copy ${worker.name} (${serviceName}) is not running on server ${server}.`,
+            up
+              ? {}
+              : {
+                  remediation: `Run the deploy workflow (or check \`opscrew logs${flag}\` and \`opscrew status${flag}\`), then run \`opscrew verify${flag}\` again.`,
+                },
+          ),
+        );
+      }
     }
   }
   const devices = new Set(network.devices.map((device) => device.name));

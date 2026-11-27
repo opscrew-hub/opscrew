@@ -3,6 +3,7 @@ import {
   APP_SERVER,
   appCopyServers,
   type DeployPlan,
+  hasRemoteAppCopies,
   type ImageBuilder,
   poolerName,
   postgresPooler,
@@ -1503,6 +1504,12 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
         ];
   return [
     'if [ "$database" != keep ]; then',
+    ...(hasRemoteAppCopies(plan)
+      ? [
+          `  echo ${shellQuote("::error::This environment runs copies across several servers, which would keep serving while the database changes, so OpsCrew refused the database step and changed nothing. Scale back to one server before rolling back the database, or run opscrew rollback --database keep.")}`,
+          "  exit 1",
+        ]
+      : []),
     '  if [ -z "$running" ] || [ "$running" = "$target" ]; then',
     `    echo ${shellQuote("::error::The server's .env names no other version by its image digest, so OpsCrew can't save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.")}`,
     "    exit 1",
@@ -2352,15 +2359,23 @@ export function copyServerSwitchCommands(plan: DeployPlan, server: string): stri
   const hostArg = primaryHost === undefined ? "" : ` -H ${shellQuote(`Host: ${primaryHost}`)}`;
   const copyHealthCheck = isWebCopy
     ? [
-        "copy_ok=0",
-        "for attempt in 1 2 3 4 5; do",
-        `  if curl -fsS --max-time 10${hostArg} ${shellQuote(copyUrl)} > /dev/null; then copy_ok=1; break; fi`,
-        "  sleep 2",
-        "done",
-        'if [ "$copy_ok" -ne 1 ]; then',
+        `proxy_port="$(docker compose port ${APP_KAMAL_PROXY_SERVICE} 80 2> /dev/null || true)"`,
+        `if [ "$proxy_port" != ${shellQuote(`${wgIp}:${APP_COPY_PROXY_PORT}`)} ] || ! ${kamalProxy("list")} | grep -Fq ${shellQuote(plan.app.name)}; then`,
         '  for id in $(docker compose ps -aq app); do keep_failed app "$id" health; done',
-        `  echo ${shellQuote(`::error::The copy on the server ${server} switched its container, but did not answer health checks on ${copyUrl}, so OpsCrew will roll back.`)}`,
+        `  echo ${shellQuote(`::error::The copy on the server ${server} switched its container, but its app-proxy is not serving ${plan.app.name} on ${wgIp}:${APP_COPY_PROXY_PORT}, so OpsCrew will roll back.`)}`,
         "  exit 1",
+        "fi",
+        "if command -v curl > /dev/null 2>&1; then",
+        "  copy_ok=0",
+        "  for attempt in 1 2 3 4 5; do",
+        `    if curl -fsS --max-time 10${hostArg} ${shellQuote(copyUrl)} > /dev/null; then copy_ok=1; break; fi`,
+        "    sleep 2",
+        "  done",
+        '  if [ "$copy_ok" -ne 1 ]; then',
+        '    for id in $(docker compose ps -aq app); do keep_failed app "$id" health; done',
+        `    echo ${shellQuote(`::error::The copy on the server ${server} switched its container, but did not answer health checks on ${copyUrl}, so OpsCrew will roll back.`)}`,
+        "    exit 1",
+        "  fi",
         "fi",
       ]
     : [];

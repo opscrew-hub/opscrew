@@ -408,6 +408,18 @@ export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): voi
         "is refused in a preview environment: previews run on one server; remove servers",
       );
     }
+    if (plan.storage?.sqlite !== undefined) {
+      issue(
+        ["processes", "workers", wi, "servers"],
+        "is refused with storage.sqlite: SQLite lives on one server's disk, so worker copies on another server cannot reach it; move to PostgreSQL or MySQL before adding worker copies",
+      );
+    }
+    if (plan.storage?.files !== undefined) {
+      issue(
+        ["processes", "workers", wi, "servers"],
+        "is refused with storage.files: local uploads live on one server's disk, so worker copies on another server cannot reach them; move uploads to S3-compatible object storage before adding worker copies",
+      );
+    }
     for (const [si, server] of wServers.entries()) {
       if (!named.has(server)) {
         const instead =

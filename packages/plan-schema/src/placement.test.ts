@@ -737,3 +737,46 @@ describe("the JSON schema of the plan", () => {
     ).toBe(false);
   });
 });
+
+describe("033 worker copies local-storage refusals", () => {
+  it("refuses worker copies with storage.sqlite and storage.files", async () => {
+    const base = await splitPlan();
+    const withWorker = {
+      ...base,
+      processes: {
+        workers: [
+          {
+            name: "jobs",
+            command: "node worker.js",
+            source: "procfile",
+            enabled: true,
+            count: 1,
+            memoryMb: 256,
+            servers: ["data"],
+          },
+        ],
+        cron: [],
+      },
+    };
+    const sqlite = DeployPlanSchema.safeParse({
+      ...withWorker,
+      storage: { sqlite: { dir: "/data" } },
+    });
+    expect(issues(sqlite)).toContainEqual(
+      expect.objectContaining({
+        path: "processes.workers.0.servers",
+        message: expect.stringContaining("storage.sqlite"),
+      }),
+    );
+    const files = DeployPlanSchema.safeParse({
+      ...withWorker,
+      storage: { files: { dir: "/uploads" } },
+    });
+    expect(issues(files)).toContainEqual(
+      expect.objectContaining({
+        path: "processes.workers.0.servers",
+        message: expect.stringContaining("storage.files"),
+      }),
+    );
+  });
+});

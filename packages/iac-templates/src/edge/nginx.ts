@@ -320,6 +320,7 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     ...(site.loadBalance !== undefined && site.loadBalance.upstreams.length > 0
       ? [
           "\t\tproxy_connect_timeout 3s;",
+          // `non_idempotent` stays off by default; `timeout` pairs with the 3s connect timeout for WG failover.
           "\t\tproxy_next_upstream error timeout http_502 http_503 http_504;",
         ]
       : []),

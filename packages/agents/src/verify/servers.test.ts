@@ -92,4 +92,57 @@ describe("verify's checks of an app on two servers", () => {
     expect(await serverChecks(w.deps, testPlan({ deployed: true }), { flag: "" })).toEqual([]);
     expect(w.commands).toEqual([]);
   });
+
+  it("verifies web copy and worker copy containers alongside app-proxy on copy servers (033)", async () => {
+    const w = await splitWorld();
+    const scaled = {
+      ...w.plan,
+      app: { ...w.plan.app, servers: ["data"] },
+      processes: {
+        workers: [
+          {
+            name: "jobs",
+            command: "node worker.js",
+            source: "procfile" as const,
+            enabled: true,
+            count: 1,
+            single: false,
+            stopGraceSeconds: 30,
+            memoryMb: 256,
+            servers: ["data"],
+          },
+        ],
+        cron: [],
+      },
+    };
+    const data = w.servers[DATA_HOST];
+    if (data !== undefined) {
+      data.ports = `db|${w.prefix}.2:5432->5432/tcp\napp-proxy|${w.prefix}.2:18090->80/tcp\napp|\njobs|\n`;
+    }
+    const passing = await serverChecks(w.deps, scaled, {
+      remote: w.remote,
+      network: w.network,
+      flag: "",
+    });
+    expect(statuses(passing)).toContain("server-data-app-proxy-published: pass");
+    expect(statuses(passing)).toContain("server-data-web-copy: pass");
+    expect(statuses(passing)).toContain("server-data-worker-jobs: pass");
+
+    if (data !== undefined) {
+      data.ports = `db|${w.prefix}.2:5432->5432/tcp\napp-proxy|${w.prefix}.2:18090->80/tcp\n`;
+    }
+    const failing = await serverChecks(w.deps, scaled, {
+      remote: w.remote,
+      network: w.network,
+      flag: " --env prod",
+    });
+    expect(failing.find((c) => c.id === "server-data-web-copy")).toMatchObject({
+      status: "fail",
+      message: expect.stringContaining("web copy (app) is not running on server data"),
+    });
+    expect(failing.find((c) => c.id === "server-data-worker-jobs")).toMatchObject({
+      status: "fail",
+      message: expect.stringContaining("Worker copy jobs (jobs) is not running on server data"),
+    });
+  });
 });

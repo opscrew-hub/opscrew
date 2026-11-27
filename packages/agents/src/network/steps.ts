@@ -97,6 +97,7 @@ export function networkFilterRules(
   const rules = published.map(({ service, port, dashboard }) => {
     if (dashboard === true) return { port, sources: devices() };
     if (service === APP_KAMAL_PROXY_SERVICE) {
+      // Only the front server (`app`), plus `previous` during an active retarget move while it still proxies.
       const sources = [...new Set([app, previous?.address])].filter(
         (a): a is string => a !== undefined,
       );

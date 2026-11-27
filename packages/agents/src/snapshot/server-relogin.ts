@@ -29,7 +29,12 @@ import {
   serviceSpec,
   shellQuote,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  appCopyServers,
+  type DeployPlan,
+  type PlanService,
+} from "@opscrew/plan-schema";
 import { parse, stringify } from "yaml";
 import type { z } from "zod";
 import { NOTHING_CHANGED } from "../promote/shared";
@@ -198,8 +203,8 @@ export async function plannedRelogin(
       since(service.name),
   );
   const services = rotated.filter((service) => serverOf(service) === server);
-  const elsewhere =
-    server === APP_SERVER ? rotated.filter((service) => serverOf(service) !== server) : [];
+  const holdsAppEnv = server === APP_SERVER || appCopyServers(plan).includes(server);
+  const elsewhere = holdsAppEnv ? rotated.filter((service) => serverOf(service) !== server) : [];
   if (services.length === 0 && elsewhere.length === 0) return undefined;
   await assertValuesCurrent(deps);
   await registerAppSecrets(deps, plan);
@@ -321,7 +326,8 @@ async function readRestored(
   const { host } = relogin;
   const names = relogin.services.map((service) => service.name);
   const seconds = relogin.services.reduce((sum, service) => sum + bootSeconds(plan, service), 0);
-  const app = relogin.server === APP_SERVER;
+  const holdsAppEnv =
+    relogin.server === APP_SERVER || appCopyServers(plan).includes(relogin.server);
   const command = [
     `mkdir -p ${ROTATE_DIR} || exit 1`,
     'rot_have="$(docker compose config --services)" || exit 1',
@@ -334,7 +340,7 @@ async function readRestored(
           `if [ -n "$rot_up" ]; then docker compose up -d --no-deps --wait $rot_up >> ${ROTATE_LOG} 2>&1 || exit ${NOT_UP}; fi`,
         ]),
     `if [ -f ${SNAPSHOT_GENERATIONS} ]; then cat ${SNAPSHOT_GENERATIONS}; fi`,
-    ...(app ? [`printf '%s\\n' ${shellQuote(APP_ENV_MARK)}`, "cat app.env || exit 1"] : []),
+    ...(holdsAppEnv ? [`printf '%s\\n' ${shellQuote(APP_ENV_MARK)}`, "cat app.env || exit 1"] : []),
   ].join("\n");
   let last: CommandResult = { exitCode: 255, stdout: "", stderr: "" };
   await pollUntil(

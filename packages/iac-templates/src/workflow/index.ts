@@ -849,6 +849,39 @@ function rollbackStep(
   const script = '"$RUNNER_TEMP/opscrew-rollback-$server.sh"';
   const valid = `[[ "$MODE" == rollback && "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} && "\${RUNNING:-}" =~ ${DIGEST_REF_PATTERN} ]]`;
   const allExtra = [...new Set([...others, ...copies])];
+  const copyRollbackSetup =
+    copies.length === 0
+      ? []
+      : [
+          "    copy_server_sh() {",
+          '      case "$1" in',
+          ...copies.map((name) => {
+            const options = `-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(ctx.serverSshPorts?.[name])}`;
+            return `        ${name}) ssh ${options} "deploy@\${${serverHostVariable(name)}}" sh -s -- "\${@:2}" ;;`;
+          }),
+          "        *) return 1 ;;",
+          "      esac",
+          "    }",
+          ...copies.flatMap((name) => [
+            `    cat > "$RUNNER_TEMP/opscrew-copy-rollback-${name}.sh" <<'REMOTE'`,
+            ...remote(copyServerRollbackCommands(plan, name)),
+          ]),
+        ];
+  const copyRollbackRun = (indent: string) =>
+    copies.length === 0
+      ? []
+      : [
+          `${indent}if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+          `${indent}  for server in ${[...copies].reverse().join(" ")}; do`,
+          `${indent}    copy_out="$(copy_server_sh "$server" "$IMAGE" < "$RUNNER_TEMP/opscrew-copy-rollback-$server.sh")" || copy_out=failed`,
+          `${indent}    case "$copy_out" in`,
+          `${indent}      restored) echo "Restored previous version on copy server $server." ;;`,
+          `${indent}      unchanged | no-previous | held*) ;;`,
+          `${indent}      *) echo "::error::OpsCrew could not restore the previous version on the copy server $server. Connect to $server and run \\\`docker compose ps\\\` in ${appDir(plan)}." ;;`,
+          `${indent}    esac`,
+          `${indent}  done`,
+          `${indent}fi`,
+        ];
   const putBack =
     others.length === 0
       ? []
@@ -889,6 +922,7 @@ function rollbackStep(
           "        fi",
           "      fi",
           "      if (( stuck || ${#failed[@]} + ${#unknown[@]} > 0 )); then",
+          ...copyRollbackRun("        "),
           `        ${hold("requests")} || true`,
           ...stuckLines(plan, reach, others).map((line) => `        ${line}`),
           "        exit 1",
@@ -904,26 +938,6 @@ function rollbackStep(
           `        restored | unchanged | no-previous) ${hold("resume")} || true ;;`,
           "      esac",
           `      ${hold("forget")} || true`,
-          "    fi",
-        ];
-  const copyRollback =
-    copies.length === 0
-      ? []
-      : [
-          ...otherServerShell(ctx, copies),
-          ...copies.flatMap((name) => [
-            `    cat > "$RUNNER_TEMP/opscrew-copy-rollback-${name}.sh" <<'REMOTE'`,
-            ...remote(copyServerRollbackCommands(plan, name)),
-          ]),
-          `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-          `      for server in ${[...copies].reverse().join(" ")}; do`,
-          '        copy_out="$(server_sh "$server" "$IMAGE" < "$RUNNER_TEMP/opscrew-copy-rollback-$server.sh")" || copy_out=failed',
-          '        case "$copy_out" in',
-          '          restored) echo "Restored previous version on copy server $server." ;;',
-          "          unchanged | no-previous | held*) ;;",
-          `          *) echo "::error::OpsCrew could not restore the previous version on the copy server $server. Connect to $server and run \\\`docker compose ps\\\` in ${appDir(plan)}." ;;`,
-          "        esac",
-          "      done",
           "    fi",
         ];
   // A cancel between the change on the other servers and the start step skips the start step.
@@ -949,6 +963,7 @@ function rollbackStep(
     "  run: |",
     "    set -uo pipefail",
     ...reach.prelude,
+    ...copyRollbackSetup,
     ...putBack,
     "    cat > \"$RUNNER_TEMP/rollback.sh\" <<'REMOTE'",
     ...remote(rollbackCommands(plan, localhost)),
@@ -956,7 +971,7 @@ function rollbackStep(
     `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
     `      outcome="$(${reach.sh} -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"`,
     "    fi",
-    ...copyRollback,
+    ...copyRollbackRun("    "),
     ...resume,
     '    case "$MODE:$outcome" in',
     // A restore or a rotation holds the app: the rollback script changed nothing, nor did the start

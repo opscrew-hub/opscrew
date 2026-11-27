@@ -79,8 +79,11 @@ export interface PgBouncerScalingResult {
  * use `logins: "separate"`, leaves the service untouched and emits a plain-English warning instead.
  */
 export function pgBouncerScaling(plan: DeployPlan, deployed = false): PgBouncerScalingResult {
-  const count = webServers(plan).length;
-  if (count <= 1) return { plan, lines: [], warnings: [] };
+  const copyCount = appCopyServers(plan).length;
+  if (copyCount === 0) return { plan, lines: [], warnings: [] };
+  const webCount = webServers(plan).length;
+  const serverLabel =
+    webCount > 1 ? `${webCount} web servers` : `${1 + copyCount} app/worker servers`;
   const lines: string[] = [];
   const warnings: string[] = [];
   let changed = false;
@@ -91,7 +94,7 @@ export function pgBouncerScaling(plan: DeployPlan, deployed = false): PgBouncerS
     if (canAutoEnable) {
       changed = true;
       lines.push(
-        `Enabled PgBouncer (\`pooler: pgbouncer\`) on PostgreSQL (${service.name}): running ${count} web servers multiplies database connections, and PgBouncer pools them to avoid exhausting PostgreSQL's \`max_connections\`.`,
+        `Enabled PgBouncer (\`pooler: pgbouncer\`) on PostgreSQL (${service.name}): running ${serverLabel} multiplies database connections, and PgBouncer pools them to avoid exhausting PostgreSQL's \`max_connections\`.`,
       );
       return {
         ...service,
@@ -104,11 +107,11 @@ export function pgBouncerScaling(plan: DeployPlan, deployed = false): PgBouncerS
     }
     if (!loginsVersion(service.version)) {
       warnings.push(
-        `PostgreSQL (${service.name}, version ${service.version}) has no connection pooler while ${count} web servers are planned: multiple web copies multiply database connections and can exhaust PostgreSQL's \`max_connections\`. Upgrade PostgreSQL to 15 or newer and set \`options: { logins: separate, pooler: pgbouncer }\` on ${service.name} in opscrew/plan.yaml.`,
+        `PostgreSQL (${service.name}, version ${service.version}) has no connection pooler while ${serverLabel} are planned: multiple copies multiply database connections and can exhaust PostgreSQL's \`max_connections\`. Upgrade PostgreSQL to 15 or newer and set \`options: { logins: separate, pooler: pgbouncer }\` on ${service.name} in opscrew/plan.yaml.`,
       );
     } else {
       warnings.push(
-        `PostgreSQL (${service.name}) has no connection pooler while ${count} web servers are planned: multiple web copies multiply database connections and can exhaust PostgreSQL's \`max_connections\`. Enable \`options: { logins: separate, pooler: pgbouncer }\` on ${service.name} in opscrew/plan.yaml.`,
+        `PostgreSQL (${service.name}) has no connection pooler while ${serverLabel} are planned: multiple copies multiply database connections and can exhaust PostgreSQL's \`max_connections\`. Enable \`options: { logins: separate, pooler: pgbouncer }\` on ${service.name} in opscrew/plan.yaml.`,
       );
     }
     return service;

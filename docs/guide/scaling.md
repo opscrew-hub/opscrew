@@ -25,10 +25,10 @@ or file/in-memory sessions — breaks across copies.
 
 OpsCrew checks this before you scale out:
 
-- **Hard blocks in `opscrew/plan.yaml`:** `npx opscrew design` refuses `app.servers` when your plan
-  uses local [SQLite](databases.md#sqlite) (`storage.sqlite`) or a local kept folder
-  (`storage.files`). Move your database to PostgreSQL or another networked database, and move
-  uploaded files to [S3-compatible object storage](object-storage.md) first.
+- **Hard blocks in `opscrew/plan.yaml`:** `npx opscrew design` refuses `app.servers` and worker
+  `servers` when your plan uses local [SQLite](databases.md#sqlite) (`storage.sqlite`) or a local
+  kept folder (`storage.files`). Move your database to PostgreSQL or another networked database, and
+  move uploaded files to [S3-compatible object storage](object-storage.md) first.
 - **Framework session and upload checks:** `npx opscrew analyze` deterministically inspects common
   frameworks (Laravel/PHP, Express/Node.js, Django/Python and Rails/Ruby) for local session drivers
   (such as `SESSION_DRIVER=file` or Express's default in-memory `MemoryStore`) and local disk
@@ -167,9 +167,13 @@ Day-to-day commands cover all copy servers automatically:
 
 - `npx opscrew status` shows the web copies, load-balancer policy, worker copies, private network
   links and per-server status ([logs and status](logs-and-status.md)).
-- `npx opscrew rollback` rolls back all web and worker copies together ([rollback](rollback.md)).
+- `npx opscrew rollback` rolls back all web and worker copies together with `--database keep`
+  ([rollback](rollback.md)). Database-mutating rollbacks (`--database snapshot` or `migrations`) and
+  `npx opscrew restore` are refused while remote copies run so no copy can write to a database being
+  restored — scale back to one server first if you need to restore a database snapshot.
 - `npx opscrew drift`, `npx opscrew verify`, `npx opscrew rotate` and `npx opscrew destroy` include
-  every copy server cleanly.
+  every copy server cleanly (`verify` checks each copy server's WireGuard `app-proxy` port, running
+  web/worker containers, and private network links).
 
 ## When advise recommends scaling out
 

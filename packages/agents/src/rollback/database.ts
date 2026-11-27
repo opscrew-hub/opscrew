@@ -25,7 +25,9 @@ import {
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  appCopyServers,
   type DeployPlan,
+  hasRemoteAppCopies,
   keepSnapshotsOf,
   MIGRATION_TOOLS,
   type Migrations,
@@ -530,6 +532,14 @@ export async function databaseStep(
   if (!snapshots && migrations === undefined) {
     keepOnly((choice) => unreadReason(run, choice));
     // Connected only after the approval, to remove an earlier one-time approval.
+    return keep();
+  }
+  if (hasRemoteAppCopies(plan)) {
+    const copies = listText(appCopyServers(plan));
+    keepOnly(
+      (choice) =>
+        `${environment} runs app copies on ${copies}, which would keep serving and writing to the database while OpsCrew ${choice === "snapshot" ? "restores a snapshot" : "runs down migrations"}. Scale back to one server before rolling back the database, or run with \`--database keep\`.`,
+    );
     return keep();
   }
   if (portainer) return portainerStep(run, input, { keep, keepOnly, keepOffer });

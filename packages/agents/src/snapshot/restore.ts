@@ -26,7 +26,12 @@ import {
   shellQuote,
   snapshotParts,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  appCopyServers,
+  hasRemoteAppCopies,
+  snapshotOffsiteOf,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { restoreHostingSnapshot } from "../hosting/snapshot";
 import { NOTHING_CHANGED } from "../promote/shared";
@@ -638,6 +643,15 @@ export async function restoreSnapshot(
   requireSnapshotId(id);
   hideIdentity(run, options.identity);
   const target = snapshotTarget(run);
+  if (target === "servers" && hasRemoteAppCopies(run.plan)) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${run.environment} runs app copies on ${listText(appCopyServers(run.plan))}, which would keep serving and writing to the database while OpsCrew restores it. Restoring a snapshot in place with remote copies is not supported yet. ${NOTHING_CHANGED}`,
+      {
+        hint: `Scale back to one server (remove app.servers and worker servers in opscrew/plan.yaml and run \`opscrew provision${run.flags}\`) before running \`opscrew restore ${id}${run.flags}\`.`,
+      },
+    );
+  }
   if (options.from === "offsite") requireOffsite(run, id, options);
   await requireNoDeployOrMove(run, "restore a snapshot");
   if (target === "portainer") return restoreInPortainer(run, services, id, options);

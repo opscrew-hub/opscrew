@@ -362,10 +362,11 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
       ? [site.upstream, ...lb.upstreams].join(" ")
       : site.upstream;
   const primaryHost = hosts[0];
+  const caddyLbPolicy = lb?.policy === "ip_hash" && site.realIp ? "client_ip_hash" : lb?.policy;
   const lbLines =
     lb !== undefined && lb.upstreams.length > 0
       ? [
-          `\t\tlb_policy ${lb.policy}`,
+          `\t\tlb_policy ${caddyLbPolicy}`,
           ...(site.versionDir === undefined
             ? ["\t\tlb_try_duration 5s", "\t\tlb_try_interval 250ms"]
             : []),

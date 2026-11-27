@@ -66,15 +66,23 @@ export interface PublishedPort {
 /** A TCP port mapping in `docker ps`'s Ports: `<address>:<host port>-><container port>/tcp`. */
 const PORT_MAPPING = /([^\s,]+):(\d+)->\d+\/tcp/g;
 
+/** The app's running Compose services and the host ports they publish on a server. */
+export interface ServerContainers {
+  /** Every running Compose service name seen in `docker ps`. */
+  services: Set<string>;
+  /** Every TCP host port published by those running containers. */
+  published: PublishedPort[];
+}
+
 /**
- * The host ports the app's running containers publish on a server (`docker ps` as the login,
- * read-only), by Compose service.
+ * The app's running Compose services and the host ports they publish on a server (`docker ps` as
+ * the login, read-only).
  * @throws OpsCrewError `COMMAND_FAILED` when the command fails.
  */
-export async function readPublishedPorts(
+export async function readServerContainers(
   remote: RemoteExec,
   app: string,
-): Promise<PublishedPort[]> {
+): Promise<ServerContainers> {
   const result = await remote.run(
     `docker ps --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.oneoff=False --format '{{.Label "com.docker.compose.service"}}|{{.Ports}}'`,
     { timeoutMs: 30_000 },
@@ -86,15 +94,30 @@ export async function readPublishedPorts(
       { hint: "Check that the server is on and reachable over SSH, then try again." },
     );
   }
-  return result.stdout.split(/\r?\n/).flatMap((line) => {
+  const services = new Set<string>();
+  const published = result.stdout.split(/\r?\n/).flatMap((line) => {
     const [service = "", ports = ""] = line.trim().split("|");
     if (!CONTAINER_NAME.test(service)) return [];
+    services.add(service);
     return [...ports.matchAll(PORT_MAPPING)].map((match) => ({
       service,
       address: match[1] ?? "",
       port: Number(match[2]),
     }));
   });
+  return { services, published };
+}
+
+/**
+ * The host ports the app's running containers publish on a server (`docker ps` as the login,
+ * read-only), by Compose service.
+ * @throws OpsCrewError `COMMAND_FAILED` when the command fails.
+ */
+export async function readPublishedPorts(
+  remote: RemoteExec,
+  app: string,
+): Promise<PublishedPort[]> {
+  return (await readServerContainers(remote, app)).published;
 }
 
 /** True when `published` holds `expected`: its service on that address and port. */

@@ -475,7 +475,14 @@ async function runScript(rotation: Rotation, run: ServerRun, action: RotateActio
     throw hostFailure(deps, host, left, "leave the rotation's script and its one-time approval");
   }
   const steps = run.steps.map((step) => step.step);
-  const envFiles = rotation.copyEnvFiles?.get(run.server) ?? rotation.envFiles;
+  const isCopy = run.server !== APP_SERVER && appCopyServers(rotation.plan).includes(run.server);
+  const envFiles = isCopy ? rotation.copyEnvFiles?.get(run.server) : rotation.envFiles;
+  if (envFiles === undefined) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `OpsCrew did not prepare the copy server ${run.server}'s env files for this rotation, so nothing was written there.`,
+    );
+  }
   const input = rotateInput(
     rotation.plan,
     steps,
@@ -728,6 +735,7 @@ export async function rotateOnServer(
   const host = await rotateHost(deps, plan, server, options);
   const app = server === APP_SERVER;
   const isCopy = !app && appCopyServers(plan).includes(server);
+  const envFiles = await envFilesWith(deps, plan, values, appEnv, "new", app ? undefined : server);
   const rotation: Rotation = {
     deps,
     plan,
@@ -736,7 +744,8 @@ export async function rotateOnServer(
     from: "started",
     runs: [run],
     hosts: new Map([[server, host]]),
-    envFiles: await envFilesWith(deps, plan, values, appEnv, "new", app ? undefined : server),
+    envFiles,
+    ...(isCopy ? { copyEnvFiles: new Map([[server, envFiles]]) } : {}),
     again,
   };
   if (app && !hasRemoteAppCopies(plan)) return runScript(rotation, run, "rotate");
