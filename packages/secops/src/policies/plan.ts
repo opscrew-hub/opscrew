@@ -9,6 +9,7 @@ import { isRecord } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { evaluateAwsPlanPolicies } from "./aws";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
@@ -313,6 +314,9 @@ function providerPolicies(
  * other: the server and firewall policies find nothing to check there.
  */
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
+  if (deployPlan.target.provider === "aws") {
+    return evaluateAwsPlanPolicies(planJson, deployPlan);
+  }
   const resources = plannedResources(planJson);
   const proxiedBehindCloudflare =
     deployPlan.dns.provider === "cloudflare" &&

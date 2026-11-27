@@ -4,13 +4,12 @@
  */
 import {
   MANAGED_CLOUD_CONTRACT_VERSION,
-  type ManagedCloudConnector,
-  type ManagedCloudConnectorDeps,
   type ManagedCloudProviderDefinition,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { createAwsConnector } from "./connector";
 import { AWS_REGIONS } from "./pricing";
 
+export { type AwsCredentials, createAwsConnector, signAwsV4Request } from "./connector";
 export {
   type DesignAwsInput,
   type DesignAwsResult,
@@ -57,21 +56,6 @@ export const AWS_CREDENTIALS_SPEC = {
     "Configure short-lived AWS credentials via `aws sso login` / `AWS_PROFILE` or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (deployments from GitHub Actions use keyless OIDC with zero stored AWS keys).",
 } as const;
 
-/** Placeholder connector until T3407 wires the full injectable SigV4 HTTP client. */
-function createPendingAwsConnector(_deps: ManagedCloudConnectorDeps): ManagedCloudConnector {
-  const notWired = () =>
-    Promise.reject(new OpsCrewError("INTERNAL", "AWS SigV4 API connector is wired in T3407."));
-  return {
-    verifyCredentials: notWired,
-    readStatus: notWired,
-    readLogs: notWired,
-    writeSecrets: notWired,
-    listSnapshots: notWired,
-    takeSnapshot: notWired,
-    runRestoreDrill: notWired,
-  };
-}
-
 /** Plain-data managed-cloud provider definition exported by `@opscrew/provider-aws`. */
 export const AWS_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
   contractVersion: MANAGED_CLOUD_CONTRACT_VERSION,
@@ -81,7 +65,7 @@ export const AWS_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
   credentials: AWS_CREDENTIALS_SPEC,
   regions: AWS_REGIONS,
   presets: ["lean", "balanced", "production-ha"],
-  createConnector: createPendingAwsConnector,
+  createConnector: createAwsConnector,
 };
 
 export default AWS_MANAGED_PROVIDER;
