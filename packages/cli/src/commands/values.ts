@@ -14,6 +14,7 @@ import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
+import { runApprovalPlanOnly } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { textTable } from "../ui/output";
 import { cancelled } from "../ui/prompts";
@@ -21,6 +22,7 @@ import { userPath } from "../ui/recovery";
 
 /** The flags of `values set` and `values unset`. */
 interface ChangeFlags extends AppEnvFlags {
+  planOnly?: boolean;
   fromFile?: string;
   plain?: boolean;
   redeploy?: boolean;
@@ -191,6 +193,7 @@ async function change(
     ai: false,
     app,
     environment: name,
+    ...(flags.planOnly === true ? { planOnly: true } : {}),
     ...(flags.yes === true ? { assumeYes: true } : {}),
   });
   const plan = await readArtifact("plan", deps.paths.files.plan);
@@ -214,7 +217,10 @@ async function change(
   const git = await requireGitRepo(deps);
   const github = await setupGitHub(deps, git, services);
   const branch = await chooseDeployBranch(deps, git, github, plan);
-  const changed = await changeAppValues(deps, plan, checked, values, github);
+  const changed = await runApprovalPlanOnly(ctx, flags.planOnly, () =>
+    changeAppValues(deps, plan, checked, values, github),
+  );
+  if (changed === undefined) return;
   const published = await publishDeploySetup(deps, {
     git,
     github,
@@ -247,6 +253,10 @@ async function list(ctx: CliContext, flags: AppEnvFlags): Promise<void> {
 /** Adds `--redeploy` and `--yes` to `command`. */
 function addChangeOptions(command: Command): Command {
   return command
+    .option(
+      "--plan-only",
+      "Show which secrets and plan entries would change without storing or pushing anything",
+    )
     .option(
       "--redeploy",
       "Start the environment's deploy workflow afterwards, so the app gets them now",

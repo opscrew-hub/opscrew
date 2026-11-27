@@ -5,8 +5,8 @@ import {
   CostLedger,
   OpsCrewError,
   Redactor,
-  resolveProjectPaths,
   RunReportSchema,
+  resolveProjectPaths,
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import sodium from "libsodium-wrappers";
@@ -63,10 +63,7 @@ describe("CLI --report, sealed secrets, and Actions guard (Feature 041)", () => 
     const reportFile = path.join(dir, "report.json");
     const ctx = createTestContext({ cwd: dir });
 
-    const code = await main(
-      ["node", "opscrew", "--report", reportFile, "promote"],
-      ctx,
-    );
+    const code = await main(["node", "opscrew", "--report", reportFile, "promote"], ctx);
     expect(code).toBe(2);
 
     const report = RunReportSchema.parse(JSON.parse(await readFile(reportFile, "utf8")));
@@ -83,10 +80,7 @@ describe("CLI --report, sealed secrets, and Actions guard (Feature 041)", () => 
       env: { OPSCREW_ACTIONS_RUN: "1" },
     });
 
-    const code = await main(
-      ["node", "opscrew", "--report", reportFile, "localhost", "trust"],
-      ctx,
-    );
+    const code = await main(["node", "opscrew", "--report", reportFile, "localhost", "trust"], ctx);
     expect(code).toBe(1);
 
     const report = RunReportSchema.parse(JSON.parse(await readFile(reportFile, "utf8")));
@@ -204,9 +198,11 @@ describe("CLI --report, sealed secrets, and Actions guard (Feature 041)", () => 
       { model: "claude-sonnet-4-6", costUsd: 0.015, calls: 1 },
     ]);
     expect(parsed.secrets).toHaveLength(1);
+    const firstSecret = parsed.secrets[0];
+    expect(firstSecret).toBeDefined();
     const decrypted = sodium.to_string(
       sodium.crypto_box_seal_open(
-        sodium.from_base64(parsed.secrets[0]!.encryptedValue, sodium.base64_variants.ORIGINAL),
+        sodium.from_base64(firstSecret?.encryptedValue ?? "", sodium.base64_variants.ORIGINAL),
         kp.publicKeyBytes,
         kp.privateKeyBytes,
       ),
@@ -226,7 +222,10 @@ describe("CLI --report, sealed secrets, and Actions guard (Feature 041)", () => 
     const rep1 = RunReportSchema.parse(JSON.parse(await readFile(reportFile, "utf8")));
     expect(rep1.failure?.firstLine).toContain("OPSCREW_RECOVERY_KEY is not set");
 
-    const ctx2 = createTestContext({ cwd: dir, env: { OPSCREW_RECOVERY_KEY: "AGE-SECRET-KEY-1TEST" } });
+    const ctx2 = createTestContext({
+      cwd: dir,
+      env: { OPSCREW_RECOVERY_KEY: "AGE-SECRET-KEY-1TEST" },
+    });
     const code2 = await main(
       ["node", "opscrew", "secrets", "restore", "--from-env", "--key-file", "key.txt"],
       ctx2,

@@ -2,8 +2,6 @@ export { type GitHubConnector, githubConnector, resolveGitHubToken } from "./con
 export type { AddedDeployKey, DeployKey } from "./deploy-keys";
 export type { ImageFacts, ImagePlatform, ImageProvenance, RegistryCredential } from "./ghcr";
 export { GitClient, type GitStatusEntry, parseGitHubRepo } from "./git";
-export { sealSecret } from "./seal";
-export { createSealedSecretSink, type SealedSecretTargets } from "./sealed-sink";
 export {
   type BranchPolicy,
   type CheckWorkflowState,
@@ -29,3 +27,5 @@ export {
   type RunnerInfo,
   type WorkflowRunSource,
 } from "./github";
+export { sealSecret } from "./seal";
+export { createSealedSecretSink, type SealedSecretTargets } from "./sealed-sink";

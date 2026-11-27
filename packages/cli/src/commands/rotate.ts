@@ -60,7 +60,7 @@ import { checkConfirmName, FlagConfirmation, hashListed } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { quietReporter } from "../reporter";
-import { collect } from "../ui/deploy";
+import { collect, refusePlanOnlyWithApprove, runApprovalPlanOnly } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { cancelled } from "../ui/prompts";
@@ -68,6 +68,7 @@ import { askKeyOut, userPath } from "../ui/recovery";
 import { printConnection, printQr } from "./vpn";
 
 interface RotateFlags extends AppEnvFlags {
+  planOnly?: boolean;
   all?: boolean;
   json?: boolean;
   /** Every `--approve <hash>`: in a script, the plans an earlier run showed. */
@@ -558,6 +559,7 @@ async function rotate(
     app,
     environment: name,
     approveHashes: hashes,
+    ...(flags.planOnly === true ? { planOnly: true } : {}),
     wrapApprovals: rotationApprovals(ctx, { hashes, confirm, yes: flags.yes === true }),
   });
   const plan = await readArtifact("plan", deps.paths.files.plan);
@@ -772,6 +774,7 @@ export function register(program: Command, ctx: CliContext): void {
       "Rotate every service and the app's own secrets in one plan, then list the other credentials",
     )
     .option("--json", "With no name: print the credentials as JSON")
+    .option("--plan-only", "Show the rotation plan and its hash without changing any credentials")
     .option(
       "--approve <hash>",
       "In a script: apply exactly the plan with this hash, which an earlier run showed (give it once per plan)",
@@ -832,12 +835,16 @@ export function register(program: Command, ctx: CliContext): void {
       if (flags.all === true) {
         const all = `opscrew rotate --all${given}`;
         const request: Request = { kind: "services", names: [] };
-        return rotate(ctx, flags, request, checkFlags(flags, request, all, given));
+        const hashes = checkFlags(flags, request, all, given);
+        refusePlanOnlyWithApprove(flags.planOnly, hashes, all);
+        await runApprovalPlanOnly(ctx, flags.planOnly, () => rotate(ctx, flags, request, hashes));
+        return;
       }
       const request = wanted.length === 0 ? undefined : requestFor(wanted, given);
       const command = `opscrew rotate${wanted.map((name) => ` ${name}`).join("")}${given}`;
       const hashes = checkFlags(flags, request, command, given);
+      refusePlanOnlyWithApprove(flags.planOnly, hashes, command);
       if (request === undefined) return list(ctx, flags);
-      return rotate(ctx, flags, request, hashes);
+      await runApprovalPlanOnly(ctx, flags.planOnly, () => rotate(ctx, flags, request, hashes));
     });
 }

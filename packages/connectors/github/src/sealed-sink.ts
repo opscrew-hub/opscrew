@@ -1,8 +1,4 @@
-import type {
-  RunReportSecret,
-  RunReportSecretPlace,
-  SealedSecretSink,
-} from "@opscrew/contracts";
+import type { RunReportSecret, RunReportSecretPlace, SealedSecretSink } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor, validateSealedKeyPair } from "@opscrew/core";
 import { sealSecret } from "./seal";
 
@@ -23,7 +19,11 @@ export function createSealedSecretSink(
   targets: SealedSecretTargets,
   redactor: Pick<Redactor, "addLiteral">,
 ): SealedSecretSink {
-  const repo = validateSealedKeyPair(targets.repo.keyId, targets.repo.publicKey, "repository secrets public key");
+  const repo = validateSealedKeyPair(
+    targets.repo.keyId,
+    targets.repo.publicKey,
+    "repository secrets public key",
+  );
   const environment =
     targets.environment === undefined
       ? undefined

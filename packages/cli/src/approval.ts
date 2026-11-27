@@ -262,6 +262,26 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
 }
 
 /**
+ * Refuses every approval during a `--plan-only` run (Feature 041) after printing the formatted
+ * plan, so the command stops before mutating anything while recording the exact plan hash,
+ * policy checks, cost delta, and required confirmation phrase in `report.json`.
+ */
+export class PlanOnlyApprovalHandler implements ApprovalHandler {
+  private readonly clock: Clock;
+
+  constructor(private readonly options: { print: (text: string) => void; clock?: Clock }) {
+    this.clock = options.clock ?? systemClock;
+  }
+
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    this.options.print(formatRequest(request));
+    return approvalDecision(this.clock, "--plan-only flag", false, {
+      reason: "Stopped before applying (--plan-only).",
+    });
+  }
+}
+
+/**
  * Picks the interactive handler on a TTY (it shows each plan with its hash and asks; a plan that
  * deletes something needs the name typed), otherwise the `--approve <hash>` handler, which grants
  * exactly the plans `approveHashes` names.

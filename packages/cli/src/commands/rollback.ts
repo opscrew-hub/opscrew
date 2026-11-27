@@ -15,10 +15,12 @@ import type { Command } from "commander";
 import { FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
+import { refusePlanOnlyWithApprove, runApprovalPlanOnly } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps, textTable } from "../ui/output";
 
 interface RollbackFlags extends AppEnvFlags {
+  planOnly?: boolean;
   /** `--to <commit|digest|version>`: the version to go back to (default: the one before). */
   to?: string;
   list?: boolean;
@@ -292,6 +294,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--resume", "Turn the environment's automatic deploys back on after a rollback")
     .option("--deploy", "With --resume: also deploy the branch's latest commit now")
     .option("--yes", "With --resume, in a script: approve turning the deploys back on")
+    .option("--plan-only", "Show the rollback plan and its hash without changing anything")
     .option(
       "--approve <hash>",
       "In a script: roll back exactly as the rollback with this hash, which an earlier run showed",
@@ -327,6 +330,7 @@ export function register(program: Command, ctx: CliContext): void {
     .action(async (flags: RollbackFlags) => {
       const given = givenFlags(flags);
       const { approve, database } = checkFlags(flags, given);
+      refusePlanOnlyWithApprove(flags.planOnly, approve, `opscrew rollback${given}`);
       const { app, name, flag } = await chooseEnvironment(ctx, flags, "rollback");
       const confirm = flags.confirm?.trim();
       const hashes = approve === undefined ? [] : [approve];
@@ -335,6 +339,7 @@ export function register(program: Command, ctx: CliContext): void {
         app,
         environment: name,
         approveHashes: hashes,
+        ...(flags.planOnly === true ? { planOnly: true } : {}),
         ...(flags.yes === true ? { assumeYes: true } : {}),
         // A database choice that changes data: the name typed, or `--confirm` with `--approve`.
         wrapApprovals: (base, clock) =>
@@ -351,31 +356,34 @@ export function register(program: Command, ctx: CliContext): void {
       const services = servicesOf(ctx).rollback;
       // rollback checks the names.
       const oldSecrets = flags.allowOldSecrets?.split(",");
-      const result = await rollback(deps, {
-        ...(flags.to === undefined ? {} : { to: flags.to.trim() }),
-        ...(flags.list === true ? { list: true } : {}),
-        ...(flags.resume === true ? { resume: true } : {}),
-        ...(flags.deploy === true ? { deploy: true } : {}),
-        ...(approve === undefined ? {} : { approveHash: approve }),
-        ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
-        ...(database !== undefined
-          ? { database }
-          : ctx.isInteractive
-            ? {
-                chooseDatabase: (question: DatabaseQuestion) =>
-                  askDatabase(ctx, question, `opscrew rollback${flag}`),
-              }
-            : {}),
-        ...(flags.keepQueues === true
-          ? { keepQueues: true }
-          : ctx.isInteractive
-            ? {
-                chooseKeepQueues: (question: QueueQuestion) =>
-                  askKeepQueues(ctx, question, `opscrew rollback${flag}`),
-              }
-            : {}),
-        ...(services === undefined ? {} : { services }),
-      });
+      const result = await runApprovalPlanOnly(ctx, flags.planOnly, () =>
+        rollback(deps, {
+          ...(flags.to === undefined ? {} : { to: flags.to.trim() }),
+          ...(flags.list === true ? { list: true } : {}),
+          ...(flags.resume === true ? { resume: true } : {}),
+          ...(flags.deploy === true ? { deploy: true } : {}),
+          ...(approve === undefined ? {} : { approveHash: approve }),
+          ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
+          ...(database !== undefined
+            ? { database }
+            : ctx.isInteractive
+              ? {
+                  chooseDatabase: (question: DatabaseQuestion) =>
+                    askDatabase(ctx, question, `opscrew rollback${flag}`),
+                }
+              : {}),
+          ...(flags.keepQueues === true
+            ? { keepQueues: true }
+            : ctx.isInteractive
+              ? {
+                  chooseKeepQueues: (question: QueueQuestion) =>
+                    askKeepQueues(ctx, question, `opscrew rollback${flag}`),
+                }
+              : {}),
+          ...(services === undefined ? {} : { services }),
+        }),
+      );
+      if (result === undefined) return;
       if (result.kind === "list") {
         const rotation =
           result.paused?.reason === "rotation"

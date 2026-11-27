@@ -119,7 +119,9 @@ export const RunReportSchema: z.ZodType<RunReport> = z.object({
   changes: z.array(z.string()),
   secrets: z.array(RunReportSecretSchema),
   costs: RunReportCostsSchema,
-  pullRequest: z.object({ url: z.string().min(1), number: z.number().int().positive().optional() }).optional(),
+  pullRequest: z
+    .object({ url: z.string().min(1), number: z.number().int().positive().optional() })
+    .optional(),
   verify: z.object({ passed: z.boolean(), summary: z.string() }).optional(),
   failure: RunReportFailureSchema.optional(),
   nextSteps: z.array(z.string()),
@@ -182,7 +184,9 @@ export function validateSealedKeyPair(
     throw new OpsCrewError(
       "INVALID_INPUT",
       `Both key ID and base64 public key are required for the ${label}.`,
-      { hint: "Pass both --secrets-key-id and --secrets-key (or set both env vars), or omit both." },
+      {
+        hint: "Pass both --secrets-key-id and --secrets-key (or set both env vars), or omit both.",
+      },
     );
   }
   if (!BASE64_PATTERN.test(key)) {

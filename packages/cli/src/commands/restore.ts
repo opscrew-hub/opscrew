@@ -8,12 +8,14 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { quietReporter } from "../reporter";
+import { refusePlanOnlyWithApprove, runApprovalPlanOnly } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { skipOtherAppsOption } from "./provision";
 import { readKeyFile } from "./secrets";
 
 interface RestoreFlags extends AppEnvFlags {
+  planOnly?: boolean;
   /** `--server`: rebuild the server from a whole-server snapshot at its provider. */
   server?: boolean;
   /** `--only <service>`: the one service put back. */
@@ -258,6 +260,10 @@ export function register(program: Command, ctx: CliContext): void {
       "In a script, with --approve: the app's name (with --server, the server's; with --drill, <app>-drill), typed to approve it",
     )
     .option(
+      "--plan-only",
+      "Show the restore plan, its hash, and required --confirm name without changing anything",
+    )
+    .option(
       "--approve <hash>",
       "In a script: restore exactly as the restore with this hash, which an earlier run showed",
     )
@@ -280,6 +286,7 @@ export function register(program: Command, ctx: CliContext): void {
       const trimmed = raw?.trim();
       const given = givenFlags(flags);
       const approve = checkFlags(flags, trimmed, given);
+      refusePlanOnlyWithApprove(flags.planOnly, approve, `opscrew restore${given}`);
       const id = trimmed ?? "";
       const json = flags.json === true;
       const { app, name, flag } = await chooseEnvironment(ctx, flags, "restore");
@@ -287,6 +294,7 @@ export function register(program: Command, ctx: CliContext): void {
         ai: false,
         app,
         environment: name,
+        ...(flags.planOnly === true ? { planOnly: true } : {}),
         wrapApprovals: restoreApprovals(ctx, flags.confirm?.trim(), approve),
         // Progress is dropped for `--json`, so stdout holds only the report; problems go to stderr.
         ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
@@ -295,13 +303,16 @@ export function register(program: Command, ctx: CliContext): void {
       const withServices = services === undefined ? {} : { services };
       if (flags.drill === true) {
         const only = flags.only?.trim();
-        const report = await drillSnapshot(deps, trimmed, {
-          ...(only === undefined ? {} : { only }),
-          ...(flags.keep === true ? { keep: true } : {}),
-          ...(flags.remove === true ? { remove: true } : {}),
-          ...(flags.allowOtherVersion === true ? { allowOtherVersion: true } : {}),
-          ...withServices,
-        });
+        const report = await runApprovalPlanOnly(ctx, flags.planOnly, () =>
+          drillSnapshot(deps, trimmed, {
+            ...(only === undefined ? {} : { only }),
+            ...(flags.keep === true ? { keep: true } : {}),
+            ...(flags.remove === true ? { remove: true } : {}),
+            ...(flags.allowOtherVersion === true ? { allowOtherVersion: true } : {}),
+            ...withServices,
+          }),
+        );
+        if (report === undefined) return;
         if (json) ctx.stdout(`${JSON.stringify(report, null, 2)}\n`);
         if (!["healthy", "removed", "none"].includes(report.outcome)) {
           throw new CliExit(REFUSED_EXIT_CODE);
@@ -309,10 +320,13 @@ export function register(program: Command, ctx: CliContext): void {
         return;
       }
       if (flags.server === true) {
-        const restored = await restoreServerSnapshot(deps, id, {
-          ...withServices,
-          ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
-        });
+        const restored = await runApprovalPlanOnly(ctx, flags.planOnly, () =>
+          restoreServerSnapshot(deps, id, {
+            ...withServices,
+            ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
+          }),
+        );
+        if (restored === undefined) return;
         if (!restored.checked) {
           printNextSteps(ctx, [`run \`opscrew verify${flag}\` to check the app.`]);
         }
@@ -321,13 +335,17 @@ export function register(program: Command, ctx: CliContext): void {
       const only = flags.only?.trim();
       const identity =
         flags.keyFile === undefined ? undefined : await readKeyFile(ctx, flags.keyFile);
-      await restoreSnapshot(deps, id, {
-        ...(only === undefined ? {} : { only }),
-        ...(flags.allowOtherVersion === true ? { allowOtherVersion: true } : {}),
-        ...(flags.from === undefined ? {} : { from: flags.from }),
-        ...(identity === undefined ? {} : { identity }),
-        ...withServices,
+      const restored = await runApprovalPlanOnly(ctx, flags.planOnly, async () => {
+        await restoreSnapshot(deps, id, {
+          ...(only === undefined ? {} : { only }),
+          ...(flags.allowOtherVersion === true ? { allowOtherVersion: true } : {}),
+          ...(flags.from === undefined ? {} : { from: flags.from }),
+          ...(identity === undefined ? {} : { identity }),
+          ...withServices,
+        });
+        return true;
       });
+      if (restored === undefined) return;
       printNextSteps(ctx, [`run \`opscrew verify${flag}\` to check the app.`]);
     });
 }

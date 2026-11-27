@@ -138,9 +138,9 @@ describe("report.json v1 (Feature 041)", () => {
 
     expect(() => validateSealedKeyPair("", validKey)).toThrow(/Both key ID and base64 public key/);
     expect(() => validateSealedKeyPair("123", "not*valid!base64")).toThrow(/not valid base64/);
-    expect(() =>
-      validateSealedKeyPair("123", Buffer.alloc(16, 1).toString("base64")),
-    ).toThrow(/32 bytes/);
+    expect(() => validateSealedKeyPair("123", Buffer.alloc(16, 1).toString("base64"))).toThrow(
+      /32 bytes/,
+    );
   });
 
   it("extracts the first non-empty redacted line", () => {

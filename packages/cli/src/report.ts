@@ -189,6 +189,10 @@ export class ReportCollector {
     this.planOnly = planOnly;
   }
 
+  markPlanOnly(): void {
+    this.planOnly = true;
+  }
+
   setTarget(target: { app?: string | undefined; environment?: string | undefined }): void {
     if (target.app !== undefined) this.app = target.app;
     if (target.environment !== undefined) this.environment = target.environment;
@@ -288,10 +292,7 @@ export class ReportCollector {
   }
 
   /** Builds and atomically writes `report.json` when `filePath` was configured. */
-  async finalize(outcome: {
-    exitCode: number;
-    error?: unknown;
-  }): Promise<RunReport | undefined> {
+  async finalize(outcome: { exitCode: number; error?: unknown }): Promise<RunReport | undefined> {
     if (this.filePath === undefined) return undefined;
     const finishedAt = this.clock.now().toISOString();
     const costEntries =
@@ -367,7 +368,8 @@ export class ReportCollector {
         firstLine: `Command exited with code ${exitCode}.`,
       };
     }
-    const message = error instanceof Error ? error.message : String(error ?? `Exit code ${exitCode}`);
+    const message =
+      error instanceof Error ? error.message : String(error ?? `Exit code ${exitCode}`);
     return {
       code: "UNEXPECTED",
       step: this.op,

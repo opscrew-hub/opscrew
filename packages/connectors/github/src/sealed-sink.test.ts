@@ -88,9 +88,11 @@ describe("createSealedSecretSink (Feature 041)", () => {
     await sink.seal("OPSCREW_RECOVERY_KEY", second, { kind: "repo" });
 
     expect(sink.entries()).toHaveLength(1);
+    const firstEntry = sink.entries()[0];
+    expect(firstEntry).toBeDefined();
     const decrypted = sodium.to_string(
       sodium.crypto_box_seal_open(
-        sodium.from_base64(sink.entries()[0]!.encryptedValue, sodium.base64_variants.ORIGINAL),
+        sodium.from_base64(firstEntry?.encryptedValue ?? "", sodium.base64_variants.ORIGINAL),
         repoKp.publicKeyBytes,
         repoKp.privateKeyBytes,
       ),

@@ -17,7 +17,7 @@ import type { Command } from "commander";
 import { askTypedName, checkConfirmName, hashListed } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
-import { collect, runPhaseCommand } from "../ui/deploy";
+import { collect, refusePlanOnlyWithApprove, runPhaseCommand } from "../ui/deploy";
 import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { confirmNameOf } from "../ui/hosting";
 import { printNextSteps } from "../ui/output";
@@ -31,6 +31,7 @@ import {
 
 /** The flags of `opscrew destroy`. */
 export interface DestroyFlags {
+  planOnly?: boolean;
   snapshot?: boolean;
   /**
    * Every `--confirm <name>`: the server name (the app's on the user's own server, in a Portainer,
@@ -189,6 +190,10 @@ export function register(program: Command, ctx: CliContext): void {
     .description(
       "Delete the deployment's infrastructure, or remove the app from your own server, your Portainer, this computer, Cloudflare's hosting, GitHub Pages or your hosting account (asks for the name)",
     )
+    .option(
+      "--plan-only",
+      "Show what would be deleted and its required --confirm names without changing anything",
+    )
     .option("--snapshot", "Take a snapshot of the server first")
     .option("--no-snapshot", "Do not take a snapshot of the server first")
     .option(
@@ -251,8 +256,10 @@ export async function runDestroyCommand(
     unconfirmed === undefined
       ? undefined
       : `In a script, add --confirm ${unconfirmed}: each server OpsCrew created is deleted only with its own name.`;
-  const teardown = async (): Promise<DestroyResult> => {
+  let planOnlyStopped = false;
+  const teardown = async (): Promise<DestroyResult | undefined> => {
     const hashes = checkApproveFlags("destroy", flags);
+    refusePlanOnlyWithApprove(flags.planOnly, hashes, "opscrew destroy");
     const hostKey = flags.hostKey?.trim();
     const environment = await chooseEnvironment(ctx, flags, "destroy");
     flag = environment.flag;
@@ -339,7 +346,7 @@ export async function runDestroyCommand(
         { hint: `Run \`${again}\` without them.` },
       );
     }
-    if (!scripted && !ctx.isInteractive) {
+    if (!scripted && !ctx.isInteractive && flags.planOnly !== true) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
         `${app ? "Removing the app" : "Deleting the deployment"} needs ${what} typed by a person, and this run is not interactive. Nothing was changed.`,
@@ -358,6 +365,7 @@ export async function runDestroyCommand(
       app: environment.app,
       environment: environment.name,
       approveHashes: hashes,
+      ...(flags.planOnly === true ? { planOnly: true } : {}),
       wrapApprovals: (base, clock) =>
         new TypedConfirmationHandler(
           base,
@@ -372,31 +380,72 @@ export async function runDestroyCommand(
     });
     // `--approve` can grant only the undo host plan here (with `--confirm`), never the rest.
     const services = servicesOf(ctx).destroy;
-    return destroy(deps, {
-      // default: a snapshot when data lives only on the server (database, backups on)
-      snapshot: flags.snapshot === undefined ? "auto" : flags.snapshot,
-      ...(flags.engine === undefined ? {} : { engine: flags.engine }),
-      ...(services === undefined ? {} : { services }),
-      ...(flags.undoHost === true ? { undoHost: true } : {}),
-      ...(flags.deleteData === true ? { deleteData: true } : {}),
-      ...(flags.deleteVerification === true ? { deleteVerification: true } : {}),
-      ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
-      ...(hostKey === undefined ? {} : { hostKey }),
-      confirm: async (preview) => {
-        // An extra cloud server, asked after the deployment's name: its own name.
-        const extra = preview.server !== undefined;
-        if (scripted) {
-          if (!extra || confirms.includes(preview.name)) return true;
-          unconfirmed = preview.name;
-          return false;
-        }
-        const answer = await askTypedName(promptsOf(ctx), confirmMessage(preview), preview.name);
-        if (!extra) typed = answer;
-        return answer === preview.name;
-      },
-    });
+    try {
+      return await destroy(deps, {
+        // default: a snapshot when data lives only on the server (database, backups on)
+        snapshot: flags.snapshot === undefined ? "auto" : flags.snapshot,
+        ...(flags.engine === undefined ? {} : { engine: flags.engine }),
+        ...(services === undefined ? {} : { services }),
+        ...(flags.undoHost === true ? { undoHost: true } : {}),
+        ...(flags.deleteData === true ? { deleteData: true } : {}),
+        ...(flags.deleteVerification === true ? { deleteVerification: true } : {}),
+        ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
+        ...(hostKey === undefined ? {} : { hostKey }),
+        confirm: async (preview) => {
+          if (flags.planOnly === true) {
+            const details = confirmMessage(preview);
+            ctx.stdout(`\n${details}\n`);
+            ctx.report?.markPlanOnly();
+            ctx.report?.recordApproval(
+              {
+                kind:
+                  preview.provider === "own"
+                    ? "host-apply"
+                    : preview.provider === "portainer"
+                      ? "stack-apply"
+                      : preview.provider === "github-pages"
+                        ? "pages-apply"
+                        : preview.provider === "hosting"
+                          ? "hosting-apply"
+                          : "iac-apply",
+                title: `Destroy ${preview.name}`,
+                details,
+                allowDestroy: true,
+                confirmPhrase: preview.name,
+              },
+              {
+                approved: false,
+                approver: "--plan-only flag",
+                decidedAt: deps.clock.now().toISOString(),
+                reason: "Stopped before applying (--plan-only).",
+              },
+            );
+            ctx.report?.addNextStep(howTo);
+            planOnlyStopped = true;
+            return false;
+          }
+          // An extra cloud server, asked after the deployment's name: its own name.
+          const extra = preview.server !== undefined;
+          if (scripted) {
+            if (!extra || confirms.includes(preview.name)) return true;
+            unconfirmed = preview.name;
+            return false;
+          }
+          const answer = await askTypedName(promptsOf(ctx), confirmMessage(preview), preview.name);
+          if (!extra) typed = answer;
+          return answer === preview.name;
+        },
+      });
+    } catch (error) {
+      if (planOnlyStopped) {
+        ctx.stdout("\nStopped after planning (--plan-only); nothing was changed.\n");
+        return undefined;
+      }
+      throw error;
+    }
   };
   const result = await runPhaseCommand(ctx, teardown, scriptHint);
+  if (result === undefined) return;
   if (provider === "portainer") {
     if (result.stackPlan !== undefined) {
       ctx.stdout(`\nApplied the stack teardown plan ${result.stackPlan} to your Portainer.\n`);

@@ -4,9 +4,11 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { addAppOption, chooseApp } from "../ui/app";
+import { refusePlanOnlyWithApprove, runApprovalPlanOnly } from "../ui/deploy";
 import { printNextSteps } from "../ui/output";
 
 interface PromoteFlags {
+  planOnly?: boolean;
   /** `--app <key>`: the repository's app. */
   app?: string;
   to: string;
@@ -47,6 +49,7 @@ export function register(program: Command, ctx: CliContext): void {
       "--allow-old-secrets <names>",
       "Cloudflare's hosting, with --version: activate that version even though these secrets (comma-separated, as OpsCrew's refusal names them) changed since it was active; it runs with their old values",
     )
+    .option("--plan-only", "Show the promotion plan and its hash without deploying anything")
     .option(
       "--approve <hash>",
       "In a script: deploy exactly the promotion with this hash, which an earlier run showed",
@@ -54,6 +57,7 @@ export function register(program: Command, ctx: CliContext): void {
   addAppOption(command).action(async (flags: PromoteFlags) => {
     const target = flags.to.trim();
     const approve = flags.approve?.trim();
+    refusePlanOnlyWithApprove(flags.planOnly, approve, `opscrew promote --to ${target}`);
     if (approve !== undefined && !isPlanHash(approve)) {
       const given = flags.app === undefined ? "" : ` --app ${flags.app.trim()}`;
       throw new OpsCrewError(
@@ -72,16 +76,20 @@ export function register(program: Command, ctx: CliContext): void {
       app: app.key,
       environment: target,
       approveHashes: approve === undefined ? [] : [approve],
+      ...(flags.planOnly === true ? { planOnly: true } : {}),
     });
     const services = servicesOf(ctx).promote;
-    const result = await promote(deps, {
-      target,
-      ...(flags.digest === undefined ? {} : { digest: flags.digest.trim() }),
-      ...(flags.version === undefined ? {} : { version: flags.version.trim() }),
-      ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
-      ...(approve === undefined ? {} : { approveHash: approve }),
-      ...(services === undefined ? {} : { services }),
-    });
+    const result = await runApprovalPlanOnly(ctx, flags.planOnly, () =>
+      promote(deps, {
+        target,
+        ...(flags.digest === undefined ? {} : { digest: flags.digest.trim() }),
+        ...(flags.version === undefined ? {} : { version: flags.version.trim() }),
+        ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
+        ...(approve === undefined ? {} : { approveHash: approve }),
+        ...(services === undefined ? {} : { services }),
+      }),
+    );
+    if (result === undefined) return;
     // The agent's reporter has said what runs now, or that the run waits for a reviewer.
     const verify = `\`opscrew verify${app.flag} --env ${target}\``;
     printNextSteps(ctx, [

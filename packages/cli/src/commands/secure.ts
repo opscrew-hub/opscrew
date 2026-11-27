@@ -10,12 +10,19 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { assumeYesHint, collect, runPhaseCommand } from "../ui/deploy";
+import {
+  assumeYesHint,
+  collect,
+  refusePlanOnlyWithApprove,
+  runApprovalPlanOnly,
+  runPhaseCommand,
+} from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { checkApproveFlags, skipOtherAppsOption, YES_DESCRIPTION } from "./provision";
 
 interface SecureFlags extends AppEnvFlags {
+  planOnly?: boolean;
   deep?: boolean;
   closePublicSsh?: boolean;
   openPublicSsh?: boolean;
@@ -38,12 +45,14 @@ async function publicSsh(ctx: CliContext, flags: SecureFlags): Promise<void> {
     ctx,
     async () => {
       const hashes = checkApproveFlags(command, flags, `opscrew ${command}`);
+      refusePlanOnlyWithApprove(flags.planOnly, hashes, `opscrew ${command}`);
       const { app, name } = await chooseEnvironment(ctx, flags, "secure");
       const deps = createPhaseDeps(ctx, {
         ai: false,
         app,
         environment: name,
         approveHashes: hashes,
+        ...(flags.planOnly === true ? { planOnly: true } : {}),
         ...(flags.yes === true ? { assumeYes: true } : {}),
       });
       const provision = servicesOf(ctx).provision;
@@ -56,7 +65,9 @@ async function publicSsh(ctx: CliContext, flags: SecureFlags): Promise<void> {
             runProvision(d, provision === undefined ? o : { ...o, services: provision }),
         },
       };
-      return close ? closePublicSsh(deps, options) : openPublicSsh(deps, options);
+      return runApprovalPlanOnly(ctx, flags.planOnly, () =>
+        close ? closePublicSsh(deps, options) : openPublicSsh(deps, options),
+      );
     },
     assumeYesHint(ctx, flags.yes),
   );
@@ -89,6 +100,10 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--open-public-ssh",
       "Open SSH to the internet again on every server, to the allow-list the plan held before it closed",
+    )
+    .option(
+      "--plan-only",
+      "With --close-public-ssh or --open-public-ssh: show the plans and their hashes without changing anything",
     )
     .option(
       "--approve <hash>",

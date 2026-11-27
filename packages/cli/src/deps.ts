@@ -49,7 +49,7 @@ import {
 } from "@opscrew/core";
 import { ClaudeAgentRuntime } from "@opscrew/runtime-claude";
 import { OpenAIAgentRuntime } from "@opscrew/runtime-openai";
-import { createApprovalHandler } from "./approval";
+import { createApprovalHandler, PlanOnlyApprovalHandler } from "./approval";
 import type { ValueInput } from "./commands/values";
 import type { CliContext } from "./context";
 import { clackPrompts, type UiPrompts } from "./ui/prompts";
@@ -187,6 +187,8 @@ interface PhaseDepsOptions {
   approveHashes?: readonly string[];
   /** `--yes`: approve the repository and GitHub steps of a non-interactive run (never applies). */
   assumeYes?: boolean;
+  /** `--plan-only`: print and record plans in `report.json`, then stop before any mutation. */
+  planOnly?: boolean;
   /**
    * Wraps the run's approval handler (for example `destroy`'s typed-confirmation handler); the
    * wrapper decides on the run's clock.
@@ -257,11 +259,14 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
       },
       clock,
     );
-  const wrappedApprovals = options.wrapApprovals ? options.wrapApprovals(base, clock) : base;
+  const wrappedApprovals =
+    options.planOnly === true
+      ? new PlanOnlyApprovalHandler({ print: ctx.stdout, clock })
+      : options.wrapApprovals
+        ? options.wrapApprovals(base, clock)
+        : base;
   const approvalHandler =
-    ctx.report === undefined
-      ? wrappedApprovals
-      : ctx.report.wrapApprovalHandler(wrappedApprovals);
+    ctx.report === undefined ? wrappedApprovals : ctx.report.wrapApprovalHandler(wrappedApprovals);
   const built = buildPhaseDeps({
     root: ctx.cwd,
     env: ctx.env,
@@ -276,9 +281,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     clock,
     interactive: ctx.isInteractive,
     version: ctx.version,
-    ...(ctx.report?.sealedSecrets === undefined
-      ? {}
-      : { sealedSecrets: ctx.report.sealedSecrets }),
+    ...(ctx.report?.sealedSecrets === undefined ? {} : { sealedSecrets: ctx.report.sealedSecrets }),
   });
   if (ctx.report !== undefined) {
     ctx.report.setTarget({ app: options.app, environment: options.environment ?? "prod" });

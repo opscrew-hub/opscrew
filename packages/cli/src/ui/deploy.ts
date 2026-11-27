@@ -1,4 +1,4 @@
-import { isUserFacingError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import type { CliContext } from "../context";
 import { CliExit, exitCodeFor, printError } from "../exit";
 
@@ -38,6 +38,52 @@ function refusedForYes(ctx: CliContext, yes: boolean | undefined, error: unknown
 export interface PlanOnlyRun {
   yes: boolean | undefined;
   stopsForYes?: () => boolean;
+}
+
+const PLAN_ONLY_STOP_CODES = new Set([
+  "APPROVAL_REFUSED",
+  "PLAN_NOT_APPROVED",
+  "DESTROY_NOT_APPROVED",
+]);
+
+/** Refuses `--plan-only` combined with `--approve` before doing any work. */
+export function refusePlanOnlyWithApprove(
+  planOnly: boolean | undefined,
+  approve: string | readonly string[] | undefined,
+  command: string,
+): void {
+  const hasApprove =
+    typeof approve === "string"
+      ? approve.trim() !== ""
+      : Array.isArray(approve) && approve.length > 0;
+  if (planOnly === true && hasApprove) {
+    throw new OpsCrewError("INVALID_INPUT", "Use either --plan-only or --approve, not both.", {
+      hint: `Run \`${command} --plan-only\` to see the plan and its hash, then \`${command} --approve <hash>\` to apply it.`,
+    });
+  }
+}
+
+/**
+ * Runs a mutating command under `--plan-only` (Feature 041): when `planOnly` is true, stopping at
+ * the approval gate exits cleanly (returning `undefined`) with `report.json` marked
+ * `"needs-approval"` and nothing changed.
+ */
+export async function runApprovalPlanOnly<T>(
+  ctx: CliContext,
+  planOnly: boolean | undefined,
+  run: () => Promise<T>,
+): Promise<T | undefined> {
+  if (planOnly !== true) return run();
+  ctx.report?.markPlanOnly();
+  try {
+    return await run();
+  } catch (error) {
+    if (isUserFacingError(error) && PLAN_ONLY_STOP_CODES.has(error.code)) {
+      ctx.stdout("\nStopped after planning (--plan-only); nothing was changed.\n");
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 /**

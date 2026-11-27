@@ -33,11 +33,17 @@ export function createProgram(ctx: CliContext): Command {
     .helpOption("-h, --help", "Show help for a command")
     .option("--cwd <dir>", "Project directory to work in (defaults to the current directory)")
     .option("--report <path>", "Write a redacted JSON run report (schemaVersion 1) to this path")
-    .option("--secrets-key-id <id>", "GitHub Actions repository secrets public key ID (for sealed report secrets)")
+    .option(
+      "--secrets-key-id <id>",
+      "GitHub Actions repository secrets public key ID (for sealed report secrets)",
+    )
     .option("--secrets-key <base64>", "GitHub Actions repository secrets base64 public key")
     .option("--env-secrets-key-id <id>", "GitHub Actions environment secrets public key ID")
     .option("--env-secrets-key <base64>", "GitHub Actions environment secrets base64 public key")
-    .option("--env-secrets-name <name>", "GitHub environment name the environment secrets key belongs to")
+    .option(
+      "--env-secrets-name <name>",
+      "GitHub environment name the environment secrets key belongs to",
+    )
     // Global options go before the command, so `promote --version <id>` is promote's own.
     .enablePositionalOptions()
     .exitOverride()

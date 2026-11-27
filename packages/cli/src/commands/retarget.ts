@@ -37,7 +37,12 @@ import {
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { collect, runPhaseCommand } from "../ui/deploy";
+import {
+  collect,
+  refusePlanOnlyWithApprove,
+  runApprovalPlanOnly,
+  runPhaseCommand,
+} from "../ui/deploy";
 import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
 import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { chooseOption } from "../ui/options";
@@ -56,6 +61,7 @@ import { chooseEmptyInTerminal, newSideAnswers, parsePortainerAddress } from "./
 
 /** Flags of `opscrew retarget` (FR-501, FR-2315). */
 export interface RetargetFlags {
+  planOnly?: boolean;
   to?: MoveTargetId | ServerlessProvider;
   option?: string;
   /** `--answers <file>`: the own server's (`server.*`) or Portainer's (`portainer.*`) answers. */
@@ -358,6 +364,7 @@ async function runCommand(
   const plan = await readArtifact("plan", deps0.paths.files.plan);
   requireServer(plan, "`opscrew retarget`", ON_HOSTING_INSTEAD.retarget);
   const command = `opscrew retarget${environment.flag}${mode === "run" ? "" : ` --${mode}`}`;
+  refusePlanOnlyWithApprove(flags.planOnly, approve, command);
   checkConfirmNames(flags.confirm ?? [], plan, command);
   // The names given with --confirm, and those typed at the prompts as they come.
   const typed = [...(flags.confirm ?? [])];
@@ -374,6 +381,7 @@ async function runCommand(
       environment: environment.name,
       ai: false,
       approveHashes: approve === undefined ? [] : [approve],
+      ...(flags.planOnly === true ? { planOnly: true } : {}),
       ...(flags.yes === true ? { assumeYes: true } : {}),
       wrapApprovals: (base, clock) => {
         const handler = new RetargetApprovalHandler(base, {
@@ -463,7 +471,7 @@ async function runCommand(
   // --finish and --abort delete a side: the app name, typed or given with --confirm.
   const name = plan.app.name;
   const scripted = typed.length > 0;
-  if (!scripted && !ctx.isInteractive) {
+  if (!scripted && !ctx.isInteractive && flags.planOnly !== true) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       `${mode === "finish" ? "Finishing the move deletes the old side" : "Aborting the move deletes the new side"} (a server OpsCrew created, or the app and its data on your own server or in your Portainer), which needs the app name typed by a person, and this run is not interactive. Nothing was changed.`,
@@ -477,6 +485,7 @@ async function runCommand(
     environment: environment.name,
     ai: false,
     approveHashes: approve === undefined ? [] : [approve],
+    ...(flags.planOnly === true ? { planOnly: true } : {}),
     ...(flags.yes === true ? { assumeYes: true } : {}),
     wrapApprovals: (base, clock) =>
       new RetargetApprovalHandler(base, {
@@ -488,6 +497,29 @@ async function runCommand(
       }),
   });
   const confirm = async (preview: { name: string; confirmPrompt?: string }) => {
+    if (flags.planOnly === true) {
+      const details =
+        preview.confirmPrompt ??
+        `Type ${preview.name} to delete everything listed above (anything else cancels)`;
+      ctx.stdout(`\n${details}\n`);
+      ctx.report?.markPlanOnly();
+      ctx.report?.recordApproval(
+        {
+          kind: "iac-apply",
+          title: `${mode === "finish" ? "Finish" : "Abort"} move (${preview.name})`,
+          details,
+          allowDestroy: true,
+          confirmPhrase: preview.name,
+        },
+        {
+          approved: false,
+          approver: "--plan-only flag",
+          decidedAt: deps.clock.now().toISOString(),
+          reason: "Stopped before applying (--plan-only).",
+        },
+      );
+      return false;
+    }
     if (scripted) return typed.includes(preview.name);
     // A provider that cancels the old server instead of deleting it says so (`confirmPrompt`).
     const answer = await askTypedName(
@@ -602,6 +634,7 @@ export function register(program: Command, ctx: CliContext): void {
       "--pages-verification <value>",
       "A site moving to GitHub Pages: the value of GitHub's domain verification record, which GitHub shows in your account's Pages settings once you add the domain there (a terminal asks for it)",
     )
+    .option("--plan-only", "Show the move's next plan and its hash without changing anything")
     .option(
       "--approve <hash>",
       "Apply exactly the saved plan with this hash (printed by the previous run) and continue",
@@ -672,12 +705,19 @@ export function register(program: Command, ctx: CliContext): void {
         ctx,
         async () => {
           environment = await chooseEnvironment(ctx, flags, "retarget");
-          return runCommand(ctx, flags, environment);
+          return runApprovalPlanOnly(ctx, flags.planOnly, () =>
+            runCommand(ctx, flags, environment),
+          );
         },
         scriptHint(ctx, flags),
       );
+      if (result === undefined) return;
       if (result.pendingPlanHash !== undefined) {
         ctx.stdout(`\nPlan hash (SHA-256): ${result.pendingPlanHash}\n`);
+        ctx.report?.recordPlannedHashes(
+          [{ label: "retarget plan", hash: result.pendingPlanHash }],
+          `opscrew retarget${environment.flag} --approve ${result.pendingPlanHash}`,
+        );
       }
       const repeat = repeatedFlags(flags, environment);
       printNextSteps(ctx, [
@@ -686,6 +726,6 @@ export function register(program: Command, ctx: CliContext): void {
           ? [`Pass ${repeat.join(" ")} again with that command.`]
           : []),
       ]);
-      if (!result.done) throw new CliExit(REFUSED_EXIT_CODE);
+      if (!result.done && flags.planOnly !== true) throw new CliExit(REFUSED_EXIT_CODE);
     });
 }

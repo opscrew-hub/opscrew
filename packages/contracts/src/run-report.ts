@@ -24,9 +24,7 @@ export interface RunReportPlan {
 }
 
 /** Where a sealed GitHub Actions secret should be stored by the dashboard's GitHub App. */
-export type RunReportSecretPlace =
-  | { kind: "repo" }
-  | { kind: "environment"; environment: string };
+export type RunReportSecretPlace = { kind: "repo" } | { kind: "environment"; environment: string };
 
 /**
  * One newly generated or updated secret, encrypted with libsodium `crypto_box_seal` to GitHub's
