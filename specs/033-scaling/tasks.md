@@ -30,4 +30,4 @@
 - [x] **T3311 (lead):** Wire `provision` (`packages/agents/src/provision/`) for copy servers: upload `app.env` (with private WG service addresses), `worker-db.env`, and `compose.yaml` to each copy server, configure deploy secrets/host keys, and update `generated_values` & host plans cleanly.
 - [x] **T3312 (lead):** Wire `status`, `drift`, `verify`, `rollback`, `rotate`, and `destroy` (`packages/agents/src/`) to inspect, verify, roll back, rotate, and tear down web/worker copy servers cleanly (including verifying copy-server `app-proxy` health and reporting per-server copy status).
 - [x] **T3313 (lead):** Add `docs/guide/scaling.md` and link it from `docs/guide/index.md`; verify CLI & MCP tools expose multi-copy status/plans cleanly.
-- [ ] **T3314 (lead):** Opus 5.5 full-feature review over `033-scaling`, full-repo gate (`gate exit 0`), and real Docker verification.
+- [x] **T3314 (lead):** Opus 5.5 full-feature review over `033-scaling`, full-repo gate (`gate exit 0`), and real Docker verification.
