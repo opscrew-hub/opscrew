@@ -537,6 +537,18 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  packages/providers/aws:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@opscrew/plan-schema':
+        specifier: workspace:*
+        version: link:../../plan-schema
+
   packages/providers/contabo:
     dependencies:
       '@opscrew/contracts':
