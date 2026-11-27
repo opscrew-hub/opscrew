@@ -181,3 +181,64 @@ GitHub's runner automatically registers secret values (and dynamic `::add-mask::
 ### Citations (R6)
 - GitHub Docs — Billing for GitHub Actions (included compute, `$0.006/min` standard Linux, storage, self-hosted runner pricing): https://docs.github.com/en/billing/managing-billing-for-products/managing-billing-for-github-actions/about-billing-for-github-actions (checked 2026-11-26)
 - GitHub Docs — Usage limits, billing, and administration (6 h / 5 d / 35 d limits, concurrency caps): https://docs.github.com/en/actions/administering-github-actions/usage-limits-billing-and-administration (checked 2026-11-26)
+
+---
+
+## R7. Codebase Inventory: What Lives in `~/.opscrew` and `.opscrew` (Checked 2026-11-27)
+
+Inspected `packages/core/src/paths.ts`, `packages/agents/src/secrets/files.ts`, `packages/agents/src/secrets/copy.ts`, and `packages/agents/src/secrets/restore.ts`.
+
+### Complete state surface
+OpsCrew already encapsulates every stateful file that cannot be rebuilt in the SOPS/age recovery copy (`opscrew/secrets.sops.json`, or `opscrew/environments/<env>/secrets.sops.json`, or under `opscrew/apps/<key>/…`):
+- **16 `HOME_FILES`** in `~/.opscrew/projects/<projectId>/`:
+  `generated_values.json`, `app_values.json`, `deploy_key`, `deploy_key.pub`, `known_hosts`, `state_passphrase`, `deploy_secrets.json`, `portainer-env.key`, `portainer-webhook`, `portainer_password`, `check_key`, `preview_key`, `preview_key.pub`, `beszel_secrets.json`, `grafana_cloud_token`, `uptime_report_key`.
+- **4 `STATE_FILES`** + OpenTofu state in `.opscrew/`:
+  `server.json`, `cloudflare.json`, `hosting.json`, `uptime.json`, plus `tfstate/*.tfstate`.
+- **Ephemeral per-run files (not persisted between Actions runs):**
+  `state.json`, `approvals.jsonl`, `costs.jsonl` (summarized into `report.json`), `plans/*` (saved plans are re-computed deterministically during the apply run and hash-verified).
+
+### Ephemeral runner hydration & first-run bootstrap
+1. **Subsequent runs:** The workflow passes the user's age private key via GitHub secret `OPSCREW_RECOVERY_KEY` (read from env, never written unencrypted to the repository). `opscrew secrets restore --from-env` (or automatic runner hydration before the command) decrypts `secrets.sops.json` into `~/.opscrew/projects/<id>/` and `.opscrew/` with `0600` permissions. After the command completes, `refreshRecoveryCopy` re-encrypts updated files using the public `age1…` recipient in `opscrew/.sops.yaml` (no private key needed for encryption) and commits only ciphertext in the run's PR.
+2. **First run (no recovery copy yet):** OpsCrew generates a fresh age identity, encrypts `secrets.sops.json` to its public recipient (`age1…`), and **seals the private `AGE-SECRET-KEY-1…`** to the dispatched `secrets_key_id` + `secrets_key` into `report.json`'s `secrets[]` as `{ name: "OPSCREW_RECOVERY_KEY", keyId, encryptedValue, place: { kind: "repo" } }`. On a public repository, the first run still emits only ciphertext in `secrets.sops.json` when explicitly enabled (`--allow-public-recovery-copy`), or fails closed with a clear hint.
+3. **GitHub deploy secrets generated or updated during a run:** A workflow's `GITHUB_TOKEN` cannot write repository or environment secrets. Passing `--secrets-key-id <id> --secrets-key <base64>` (and optionally `--env-secrets-key-id <id> --env-secrets-key <base64> --env-secrets-name <githubEnv>`) routes secret writes through libsodium sealed-box encryption (`packages/connectors/github/src/seal.ts`, `sealSecret`) and records each sealed entry in `report.json`'s `secrets[]` (`{ name, keyId, encryptedValue, place }`), so the dashboard stores ciphertext via its GitHub App without ever reading plaintext.
+
+---
+
+## R8. Codebase Audit: Non-Interactive Flags Across All CLI Commands (Checked 2026-11-27)
+
+Inspected all 35 command modules in `packages/cli/src/commands/*.ts` and `packages/cli/src/approval.ts`.
+
+### Existing non-interactive approval primitives
+`packages/cli/src/approval.ts` already implements:
+- `NonInteractiveApprovalHandler` (`--approve <hash>` repeatable for `iac-apply`, `host-apply`, `stack-apply`, `cloudflare-apply`, `pages-apply`, `hosting-apply`, `promote`, `github-secrets`; `--yes` only for `repo-write`, `github-secrets`, `github-settings`, `git-push`, `pull-request`, never for applies or destroys).
+- `FlagConfirmation` (`--confirm <name>` paired with `--approve <hash>` for deletions/replacements).
+- `MaintenanceWindowApproval` (`--allow-downtime`), `withServerRepair` (`--confirm <app>` + `--approve <hash>`).
+- `CliContext.isInteractive` automatically evaluates to `false` when `CI=true` or non-TTY.
+
+### Command matrix for Feature 041 (`op`)
+- **Excluded in Actions (require user's local computer; fail closed with `PHASE_PRECONDITION` when `--report` / Actions mode targets them):**
+  - `localhost` (`trust`, `untrust`, and any command whose plan targets `target.provider: localhost` or `target.home: true`),
+  - `mcp` (`install`, `uninstall`),
+  - `vpn` (local device key generation / local WireGuard client config),
+  - `secrets folder` (local desktop backup folder).
+- **Read-only / analysis commands (single run, emit `report.json` with `status: "ok"` or `"failed"`):**
+  `scan`, `analyze`, `interview --answers <file>`, `design`, `status`, `verify`, `drift`, `advise`, `logs`, `providers`, `values list`, `secrets status`, `env list`, `app list`, `preview list`, `snapshot list`.
+- **Two-run plan/apply commands already having `--plan-only`:**
+  `provision`, `addon enable|disable`, `portainer enable|disable`.
+- **Two-run plan/apply commands currently missing `--plan-only` (must add in 041):**
+  - `destroy` (currently has `--approve`, `--confirm`, no `--plan-only` dry preview emitting plan hashes + required `--confirm` phrase into `report.json`),
+  - `retarget` (has `--answers`, `--approve`, `--confirm`, `--allow-downtime`, `--yes`, no `--plan-only`),
+  - `rollback` (has `--to`, `--approve`, `--confirm`, `--yes`, no `--plan-only`),
+  - `restore` (has `--approve`, `--confirm`, `--yes`, no `--plan-only`),
+  - `rotate` (has `--approve`, `--confirm`, `--yes`, no `--plan-only`),
+  - `promote` (has `--version`, `--approve`, `--yes`, no `--plan-only`),
+  - `secure` (has `--approve`, `--yes`, no `--plan-only`),
+  - `values set|unset` (currently uses `--yes` + `--from-file`, needs `--plan-only` and `github-secrets` summary in `report.json`).
+
+---
+
+## R9. Codebase Audit: Cost Ledger and Sealed-Box Helpers (Checked 2026-11-27)
+
+- **Cost ledger (`packages/core/src/state.ts`):** `CostLedger` appends JSONL records `{ at, phase, model?, costUsd }` to `paths.files.costs` (`.opscrew/costs.jsonl`). Capturing the entry count before a CLI command runs and slicing new entries appended after it gives the exact per-run AI spend, totalled overall and grouped by `model` (with `unknown` fallback if `model` is omitted), with zero duplicate accounting.
+- **Sealed-box encryption (`packages/connectors/github/src/seal.ts`):** `sealSecret(publicKeyBase64, value)` already uses `libsodium-wrappers` `crypto_box_seal` with `ORIGINAL` base64 variant — byte-identical to what GitHub's `PUT /repos/{owner}/{repo}/actions/secrets/{secret_name}` and `PUT /repos/{owner}/{repo}/environments/{env}/secrets/{secret_name}` require.
+- **Redaction (`packages/core/src/redact.ts`):** Every string placed in `report.json` (titles, details, failure lines, hints, next steps) MUST pass through `ctx.redactor.redact` before serialization; `secrets[].encryptedValue` is base64 libsodium ciphertext (never plaintext) and each plaintext value is registered with `ctx.redactor.addLiteral` before sealing so it can never leak into any other field.
