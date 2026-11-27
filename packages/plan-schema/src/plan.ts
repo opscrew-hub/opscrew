@@ -3,6 +3,7 @@ import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN, orText } from "@ops
 import { z } from "zod";
 import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
 import { AwsTargetSchema } from "./aws";
+import { AzureTargetSchema } from "./azure";
 import {
   ComponentNameSchema,
   PlanServiceSchema,
@@ -551,9 +552,10 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
   GithubPagesTargetSchema,
   HostingTargetSchema,
   AwsTargetSchema,
+  AzureTargetSchema,
 ]);
 
-/** True for a managed-cloud target (e.g., AWS), narrowing it to one. */
+/** True for a managed-cloud target (e.g., AWS, Azure), narrowing it to one. */
 export function isManagedCloudTarget<T extends { provider: string }>(
   target: T,
 ): target is Extract<T, { provider: ManagedCloudProvider }> {
@@ -565,6 +567,13 @@ export function isAwsTarget<T extends { provider: string }>(
   target: T,
 ): target is Extract<T, { provider: "aws" }> {
   return target.provider === "aws";
+}
+
+/** True for an Azure managed-services target, narrowing it to one. */
+export function isAzureTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: "azure" }> {
+  return target.provider === "azure";
 }
 
 /** True for a shared hosting account's target, narrowing it to one. */

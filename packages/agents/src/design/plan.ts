@@ -158,9 +158,9 @@ function targetFor(
     }
     return input.hosting.target;
   }
-  if (target.provider === "aws") {
+  if (target.provider === "aws" || target.provider === "azure") {
     throw new Error(
-      "AWS managed-services designs are built by @opscrew/provider-aws, not VPS planTarget.",
+      `${target.provider.toUpperCase()} managed-services designs are built by @opscrew/provider-${target.provider}, not VPS planTarget.`,
     );
   }
   return {

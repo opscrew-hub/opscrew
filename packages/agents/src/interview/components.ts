@@ -252,8 +252,13 @@ export async function hostedAdditions(
     for (const choice of choices) additions.set(choice.kind, `, which ${where} must have room for`);
     return additions;
   }
-  // A server-less target, a hosting account, or AWS managed services has no single VPS server price to name here.
-  if (isServerlessProvider(provider) || provider === "hosting" || provider === "aws") {
+  // A server-less target, a hosting account, or managed-cloud services has no single VPS server price to name here.
+  if (
+    isServerlessProvider(provider) ||
+    provider === "hosting" ||
+    provider === "aws" ||
+    provider === "azure"
+  ) {
     return additions;
   }
   const catalog = vpsConnector(provider, {

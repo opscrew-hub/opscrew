@@ -51,6 +51,7 @@ import { appCandidatesText } from "../analyze/summary";
 import { appFlag } from "../apps/choice";
 import { requireOnePagesSite, requireUniqueNames } from "../apps/names";
 import { runAwsDesign } from "../aws";
+import { runAzureDesign } from "../azure";
 import { type CheckRepositoryApi, checkDesignText, readCheckRepository } from "../check/design";
 import {
   repositoryCheckSettings,
@@ -1052,6 +1053,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       lines: awsRes.lines,
     };
   }
+  if (inputs.requirements.provider === "azure") {
+    const azureRes = await runAzureDesign(deps, {
+      facts: inputs.facts,
+      requirements: inputs.requirements,
+      ...(options.optionId === undefined ? {} : { optionId: options.optionId }),
+      ...(options.choose === undefined ? {} : { choose: options.choose }),
+      ...(options.setFlags === undefined ? {} : { setFlags: options.setFlags }),
+      ...(options.branch === undefined ? {} : { branch: options.branch }),
+    });
+    return {
+      options: azureRes.options,
+      chosen: azureRes.chosen,
+      plan: azureRes.plan,
+      priceSource: azureRes.priceSource,
+      warnings: azureRes.warnings,
+      lines: azureRes.lines,
+    };
+  }
   const name = paths.environment;
   const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
   // The plan without its placement, which design completes from the user's edits below.
@@ -1900,6 +1919,7 @@ function providerName(id: DeployProvider): string {
   if (isServerlessProvider(id)) return serverlessName(id);
   if (id === "hosting") return "a hosting account";
   if (id === "aws") return "AWS";
+  if (id === "azure") return "Azure";
   return providerProfile(id).displayName;
 }
 

@@ -341,8 +341,13 @@ describe("the hosting guards", () => {
     expect(schemas.requirements).toMatchObject({
       properties: { provider: { enum: DeployProviderSchema.options } },
     });
-    const plan = schemas.plan as { properties: { target: { oneOf: object[] } } };
-    expect(plan.properties.target.oneOf.at(-1)).toMatchObject({
+    const plan = schemas.plan as {
+      properties: { target: { oneOf: Array<{ properties?: { provider?: { const?: string } } }> } };
+    };
+    const hostingOneOf = plan.properties.target.oneOf.find(
+      (entry) => entry.properties?.provider?.const === "hosting",
+    );
+    expect(hostingOneOf).toMatchObject({
       properties: {
         provider: { const: "hosting" },
         panel: { enum: ["cpanel", "plesk", "directadmin", "sftp"] },

@@ -63,7 +63,7 @@ export interface ManagedCloudRenderedFile {
 
 /** Out-of-band secret write performed after plan-hash approval (never embedded in Terraform state). */
 export interface ManagedCloudSecretWrite {
-  readonly store: "secrets-manager" | "ssm-parameter";
+  readonly store: "secrets-manager" | "ssm-parameter" | "key-vault" | "secret-manager";
   readonly name: string;
   readonly value: string;
   readonly description?: string;
@@ -238,8 +238,11 @@ export interface ManagedCloudProviderDefinition {
     readonly environment: string;
     readonly target: unknown;
     readonly branch?: string;
-    readonly imageRegistry?: "ghcr" | "ecr";
+    readonly imageRegistry?: "ghcr" | "ecr" | "acr" | "artifact-registry";
     readonly roleArnVar?: string;
+    readonly clientIdVar?: string;
+    readonly tenantIdVar?: string;
+    readonly subscriptionIdVar?: string;
   }) => ManagedCloudRenderedFile;
 }
 

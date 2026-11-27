@@ -10,6 +10,7 @@ import { edgeProvider } from "@opscrew/edge-providers";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { evaluateAwsPlanPolicies } from "./aws";
+import { evaluateAzurePlanPolicies } from "./azure";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
@@ -316,6 +317,9 @@ function providerPolicies(
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
   if (deployPlan.target.provider === "aws") {
     return evaluateAwsPlanPolicies(planJson, deployPlan);
+  }
+  if (deployPlan.target.provider === "azure") {
+    return evaluateAzurePlanPolicies(planJson, deployPlan);
   }
   const resources = plannedResources(planJson);
   const proxiedBehindCloudflare =

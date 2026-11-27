@@ -18,6 +18,7 @@ import {
 } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import { runAwsVerify } from "../aws";
+import { runAzureVerify } from "../azure";
 import type { PhaseDeps } from "../context";
 import { builderBranch, followsBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
@@ -183,6 +184,24 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     return {
       checks,
       passed: awsVerify.ok,
+      url,
+      plan,
+    };
+  }
+  if (plan.target.provider === "azure") {
+    const azureVerify = await runAzureVerify(deps, {
+      plan,
+      ...(options.url === undefined ? {} : { url: options.url }),
+    });
+    const checks: CheckResult[] = azureVerify.checks.map((c) =>
+      checkResult(c.id, c.id, "high", c.ok ? "pass" : "fail", c.detail),
+    );
+    const url =
+      options.url ??
+      (plan.dns.domain === undefined ? `azure://${plan.app.name}` : `https://${plan.dns.domain}`);
+    return {
+      checks,
+      passed: azureVerify.ok,
       url,
       plan,
     };

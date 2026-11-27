@@ -8,6 +8,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import { runAwsLogs } from "../aws";
+import { runAzureLogs } from "../azure";
 import type { PhaseDeps } from "../context";
 import { hostingLogs } from "../hosting/logs";
 import { registerAppSecrets } from "../shared/app-secrets";
@@ -111,6 +112,21 @@ export async function readLogs(
     }));
     return {
       first: `CloudWatch Logs (${awsLogs.logGroup}): ${lines.length} line(s)`,
+      async *[Symbol.asyncIterator]() {
+        for (const line of lines) yield line;
+      },
+    };
+  }
+  if (plan.target.provider === "azure") {
+    const azureLogs = await runAzureLogs(deps, { plan, limit: tail });
+    const lines = azureLogs.lines.map((line) => ({
+      time: line.timestamp,
+      service: line.stream,
+      stream: "stdout" as const,
+      text: line.message,
+    }));
+    return {
+      first: `Azure Log Analytics (${azureLogs.workspaceId}): ${lines.length} line(s)`,
       async *[Symbol.asyncIterator]() {
         for (const line of lines) yield line;
       },

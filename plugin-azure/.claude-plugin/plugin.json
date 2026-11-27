@@ -1,0 +1,12 @@
+{
+  "name": "opscrew-azure",
+  "version": "0.1.0",
+  "description": "Microsoft Azure managed-services skills for OpsCrew (Container Apps, App Service, Flexible Server, Azure Managed Redis, Key Vault, keyless OIDC).",
+  "author": {
+    "name": "OpsCrew",
+    "url": "https://opscrew.dev"
+  },
+  "repository": "https://github.com/opscrew-hub/opscrew",
+  "license": "Apache-2.0",
+  "dependencies": ["opscrew"]
+}

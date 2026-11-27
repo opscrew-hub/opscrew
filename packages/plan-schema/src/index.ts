@@ -8,6 +8,7 @@ export type { Currency, Money, PhaseName } from "@opscrew/contracts";
 export * from "./apps";
 export * from "./architecture";
 export * from "./aws";
+export * from "./azure";
 export {
   type CatalogueProvider,
   PlainUrlSchema,

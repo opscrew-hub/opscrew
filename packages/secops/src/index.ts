@@ -51,7 +51,12 @@ export {
   serviceHostChecks,
   type TcpConnect,
 } from "./hardening";
-export { blockingPolicyFailures, evaluateAwsPlanPolicies, evaluatePlanPolicies } from "./policies";
+export {
+  blockingPolicyFailures,
+  evaluateAwsPlanPolicies,
+  evaluateAzurePlanPolicies,
+  evaluatePlanPolicies,
+} from "./policies";
 export {
   type ProxyAdditionsContext,
   type ProxyRefusal,

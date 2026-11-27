@@ -888,11 +888,13 @@ async function newTargetId(
   const { provider } = await requireRequirements(deps);
   if (provider === "localhost") throw thisComputerNoMove();
   if (provider === "hosting") throw hostingNotAvailable("`opscrew retarget`");
-  if (provider === "aws") {
+  if (provider === "aws" || provider === "azure") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "Moving directly to an AWS managed-services target via `opscrew retarget` is only supported through the AWS EC2+Compose bridge (`@opscrew/provider-aws`). Nothing was changed.",
-      { hint: "Run `opscrew design` with AWS or install `@opscrew/provider-aws` first." },
+      `Moving directly to a ${provider.toUpperCase()} managed-services target via \`opscrew retarget\` is not supported on the single-server VPS move path. Nothing was changed.`,
+      {
+        hint: `Run \`opscrew design\` with ${provider.toUpperCase()} or install \`@opscrew/provider-${provider}\` first.`,
+      },
     );
   }
   if (isServerlessProvider(provider)) {

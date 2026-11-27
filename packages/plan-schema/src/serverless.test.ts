@@ -682,6 +682,26 @@ describe("onServer: the runners that deploy on or to a server", () => {
   } as const;
   const noDns = { provider: "none", proxied: false, www: false } as const;
   const hosting = { provider: "hosting", panel: "cpanel", app: "php", webRoot: "public" } as const;
+  const awsTarget = {
+    provider: "aws",
+    mode: "aws-managed",
+    region: "us-east-1",
+    preset: "lean",
+    compute: "lightsail-containers",
+    components: {
+      compute: { service: "lightsail-containers", why: "flat-rate", monthlyCostUsd: 7 },
+    },
+  } as const;
+  const azureTarget = {
+    provider: "azure",
+    mode: "azure-managed",
+    region: "westeurope",
+    preset: "lean",
+    compute: "container-apps",
+    components: {
+      compute: { service: "container-apps", why: "consumption", monthlyCostUsd: 8 },
+    },
+  } as const;
 
   /** A staging plan of `target` (its DNS as the target needs it) with `environment`. */
   async function staging(target: string, environment: Record<string, unknown>) {
@@ -702,7 +722,11 @@ describe("onServer: the runners that deploy on or to a server", () => {
                       ? localhost
                       : target === "hosting"
                         ? hosting
-                        : { ...server.target, provider: target },
+                        : target === "aws"
+                          ? awsTarget
+                          : target === "azure"
+                            ? azureTarget
+                            : { ...server.target, provider: target },
               ...(target === "portainer" || target === "localhost" ? { dns: noDns } : {}),
             };
     return {
@@ -725,6 +749,8 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "cloudflare-workers",
       "github-pages",
       "hosting",
+      "aws",
+      "azure",
     ]);
     const onServer = new Set(["hetzner", "digitalocean", "contabo", "ovhcloud", "own"]);
     const runnerHost = { name: "home-box", arch: "amd64" };

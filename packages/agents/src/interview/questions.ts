@@ -212,6 +212,15 @@ export function buildQuestions(
               },
             ]
           : []),
+        ...(context.managedProviders?.includes("azure") === true
+          ? [
+              {
+                value: "azure",
+                label: "Microsoft Azure",
+                hint: "managed Azure services (Container Apps, App Service, VM + Compose, PostgreSQL/MySQL Flexible Server, Azure Managed Redis, Blob Storage, Key Vault); uses the optional @opscrew/provider-azure plugin (`opscrew plugin add azure`)",
+              },
+            ]
+          : []),
         ...(context.serverless ?? []).map((id) => ({
           value: id,
           label: providerProfile(id).displayName,

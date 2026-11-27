@@ -45,6 +45,7 @@ const NOT_CLOUD = {
   "github-pages": "a site on GitHub Pages",
   hosting: "an app on a hosting account",
   aws: "an AWS managed-services target",
+  azure: "a Microsoft Azure managed-services target",
 } as const satisfies Record<Exclude<DeployTarget["provider"], CloudProvider>, string>;
 
 /**

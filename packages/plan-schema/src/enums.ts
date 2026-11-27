@@ -154,9 +154,9 @@ export const ServerlessProviderSchema = z.enum(["cloudflare-workers", "github-pa
 export type ServerlessProvider = z.infer<typeof ServerlessProviderSchema>;
 
 /**
- * Separately installed managed-cloud targets (ADR 0040: AWS 034, later Azure 038 and GCP 039).
+ * Separately installed managed-cloud targets (ADR 0040: AWS 034, Azure 038, later GCP 039).
  */
-export const ManagedCloudProviderSchema = z.enum(["aws"]);
+export const ManagedCloudProviderSchema = z.enum(["aws", "azure"]);
 export type ManagedCloudProvider = z.infer<typeof ManagedCloudProviderSchema>;
 
 /**

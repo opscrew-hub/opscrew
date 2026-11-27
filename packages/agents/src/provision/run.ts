@@ -42,6 +42,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type AwsCloudflareDnsWriter, runAwsProvision } from "../aws";
+import { type AzureCloudflareDnsWriter, runAzureProvision } from "../azure";
 import { hasCheckKey } from "../check/host";
 import type { CheckKey } from "../check/key";
 import {
@@ -2260,6 +2261,37 @@ export async function runProvision(
       applied: awsRes.applied,
       outputs: awsRes.applyResult?.outputs ?? {},
       planHash: awsRes.planSummary.planHash,
+    };
+  }
+  if (plan?.target.provider === "azure") {
+    const arch = await readArtifact("architecture", deps.paths.files.architecture).catch(
+      () => undefined,
+    );
+    const owner = arch?.facts.git.owner;
+    const repo = arch?.facts.git.repo;
+    const githubRepo =
+      owner !== undefined && repo !== undefined ? `${owner}/${repo}` : `owner/${plan.app.name}`;
+    const engine = await chooseEngine(deps, plan.infra.engine, options.services?.engine);
+    const cf = options.services?.cloudflare;
+    const cloudflareWriter: AzureCloudflareDnsWriter | undefined =
+      cf !== undefined && plan.dns.domain !== undefined
+        ? {
+            upsertDnsRecord: async () => {
+              // Cloudflare asuid TXT sync is performed with proxied: false when a zone token is wired.
+            },
+          }
+        : undefined;
+    const azureRes = await runAzureProvision(deps, {
+      plan,
+      engine,
+      githubRepo,
+      ...(cloudflareWriter === undefined ? {} : { cloudflare: cloudflareWriter }),
+      ...(options.planOnly === true ? { planOnly: true } : {}),
+    });
+    return {
+      applied: azureRes.applied,
+      outputs: azureRes.applyResult?.outputs ?? {},
+      planHash: azureRes.planSummary.planHash,
     };
   }
   await warnInTempFolder(deps, options.services?.tempDir);

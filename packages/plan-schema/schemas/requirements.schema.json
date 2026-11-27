@@ -45,7 +45,8 @@
         "cloudflare-workers",
         "github-pages",
         "hosting",
-        "aws"
+        "aws",
+        "azure"
       ]
     },
     "region": {

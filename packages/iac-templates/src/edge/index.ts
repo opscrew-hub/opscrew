@@ -162,8 +162,10 @@ export function edgeProxy(plan: DeployPlan): EdgeProxy {
   if (isHostingTarget(plan.target)) {
     throw wrongTarget("OpsCrew's reverse proxy isn't available for a hosting account.");
   }
-  if (plan.target.provider === "aws") {
-    throw wrongTarget("OpsCrew's server reverse proxy isn't available for an AWS managed target.");
+  if (plan.target.provider === "aws" || plan.target.provider === "azure") {
+    throw wrongTarget(
+      `OpsCrew's server reverse proxy isn't available for a ${plan.target.provider.toUpperCase()} managed target.`,
+    );
   }
   return plan.target.provider === "portainer" ? "caddy" : plan.target.edge;
 }
