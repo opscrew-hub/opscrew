@@ -247,7 +247,18 @@ export async function runAzureProvision(
     deps.reporter.step(
       `Writing ${options.secrets.length} secret(s) out-of-band to Azure Key Vault (never stored in Terraform state)`,
     );
-    const secretRes = await connector.writeSecrets({
+    const kvUri =
+      typeof applyResult.outputs.key_vault_uri === "string"
+        ? applyResult.outputs.key_vault_uri
+        : undefined;
+    const secretConnector =
+      kvUri !== undefined && options.connector === undefined
+        ? resolveAzureConnector(plugin, deps, {
+            ...options,
+            envOverrides: { AZURE_KEY_VAULT_URL: kvUri },
+          })
+        : connector;
+    const secretRes = await secretConnector.writeSecrets({
       region: target.region,
       secrets: options.secrets,
     });

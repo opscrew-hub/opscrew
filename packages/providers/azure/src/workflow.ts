@@ -7,6 +7,7 @@
  */
 import type { ManagedCloudRenderedFile } from "@opscrew/contracts";
 import type { AzureTarget } from "@opscrew/plan-schema";
+import { azureAppResourceName, azureResourceGroupName } from "./connector";
 
 export interface RenderAzureWorkflowInput {
   readonly appName: string;
@@ -43,8 +44,8 @@ export function renderAzureDeployWorkflow(
     input.subscriptionIdVar ?? "AZURE_SUBSCRIPTION_ID",
     "AZURE_SUBSCRIPTION_ID",
   );
-  const rgName = `rg-opscrew-${input.appName}-${input.environment}`;
-  const appResourceName = `opscrew-${input.appName}-${input.environment}`;
+  const rgName = azureResourceGroupName(input.appName, input.environment);
+  const appResourceName = azureAppResourceName(input.appName, input.environment);
 
   let deployStep: string;
   if (input.target.compute === "app-service") {

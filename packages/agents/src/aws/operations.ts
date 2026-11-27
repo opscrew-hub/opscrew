@@ -282,8 +282,9 @@ export async function runAwsSnapshotTake(
 
 /**
  * Runs an isolated throwaway RDS restore drill (ADR 0034: `PubliclyAccessible=false`, private DB
- * subnet group, verified `available`, confirmed deleted). Requires plan-hash approval unless run
- * under a pre-installed scheduled standing approval (`standingApproval: true`).
+ * subnet group, verified `available`, confirmed deleted). Always enforces SHA-256 approval via
+ * `ApprovalGate`: either a fresh per-run approval or a pre-installed scheduled standing approval
+ * verified by `standingApprovalHash`.
  */
 export async function runAwsRestoreDrill(
   deps: PhaseDeps,
@@ -292,7 +293,7 @@ export async function runAwsRestoreDrill(
     readonly drillInstanceId?: string;
     readonly dbSubnetGroupName?: string;
     readonly vpcSecurityGroupIds?: readonly string[];
-    readonly standingApproval?: boolean;
+    readonly standingApprovalHash?: string;
   },
 ): Promise<ManagedCloudRestoreDrillResult> {
   const { plan, target } = await resolvePlanAndTarget(deps, options);
@@ -303,7 +304,9 @@ export async function runAwsRestoreDrill(
   const drillInstanceId = options.drillInstanceId ?? `${dbId}-drill`;
   const dbSubnetGroupName = options.dbSubnetGroupName ?? `${dbId}-db`;
 
-  if (options.standingApproval !== true) {
+  if (options.standingApprovalHash !== undefined) {
+    await deps.approvals.assertApprovedRemoteExec(options.standingApprovalHash);
+  } else {
     const drillHash = createHash("sha256")
       .update(
         JSON.stringify({

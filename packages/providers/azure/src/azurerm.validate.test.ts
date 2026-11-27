@@ -64,7 +64,8 @@ function sampleRequirements(): Requirements {
 }
 
 async function runTofuValidate(files: readonly { path: string; content: string }[]) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "opscrew-azurerm-validate-"));
+  const baseTmp = process.env.OPSCREW_TEST_TMP || os.tmpdir();
+  const dir = await mkdtemp(path.join(baseTmp, "opscrew-azurerm-validate-"));
   tempDirs.push(dir);
   for (const file of files) {
     await writeFile(path.join(dir, file.path), file.content, "utf8");

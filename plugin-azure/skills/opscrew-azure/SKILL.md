@@ -39,3 +39,4 @@ opscrew design --option azure-lean --set compute=app-service --set observability
 4. **No retiring Redis:** OpsCrew always provisions `azurerm_managed_redis` and blocks retiring `azurerm_redis_cache`.
 5. **Cloudflare custom domains:** Custom-domain `asuid.<domain>` TXT validation records are created DNS-only (`proxied: false`).
 6. **Plan-hash approval & typed destroy:** Every `tofu apply`, Key Vault rotation, PITR restore drill, and `destroy` goes through OpsCrew's SHA-256 plan-hash approval gate.
+

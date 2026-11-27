@@ -2,21 +2,22 @@
  * `@opscrew/provider-azure` — Official installable Microsoft Azure managed-services provider plugin
  * (Feature 038, ADR 0040).
  */
-import {
-  MANAGED_CLOUD_CONTRACT_VERSION,
-  type ManagedCloudProviderDefinition,
-} from "@opscrew/contracts";
-import { AzureTargetSchema, type ProjectFacts, type Requirements } from "@opscrew/plan-schema";
-import { createAzureConnector } from "./connector";
+import type { ManagedCloudProviderDefinition } from "@opscrew/contracts";
+import type { ProjectFacts, Requirements } from "@opscrew/plan-schema";
+import { AzureProviderError, createAzureConnector } from "./connector";
 import { designAzureTarget } from "./design";
 import { renderAzureHcl } from "./hcl";
 import { applyAzureOverrides, parseAzureSetFlag } from "./overrides";
 import { AZURE_REGIONS } from "./pricing";
+import { StandaloneAzureTargetSchema } from "./schema";
 import { renderAzureDeployWorkflow } from "./workflow";
+
+const CONTRACT_VERSION = 1 as const;
 
 export {
   type AzureCredentials,
   AzureProviderError,
+  azureAppResourceName,
   azureDbServerName,
   azureKeyVaultName,
   azureResourceGroupName,
@@ -78,7 +79,7 @@ export const AZURE_CREDENTIALS_SPEC = {
 
 /** Plain-data managed-cloud provider definition exported by `@opscrew/provider-azure`. */
 export const AZURE_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
-  contractVersion: MANAGED_CLOUD_CONTRACT_VERSION,
+  contractVersion: CONTRACT_VERSION,
   id: "azure",
   displayName: "Microsoft Azure",
   packageName: "@opscrew/provider-azure",
@@ -108,7 +109,7 @@ export const AZURE_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
     };
   },
   applyOverrides: ({ target, setFlags }) => {
-    const parsedTarget = AzureTargetSchema.parse(target);
+    const parsedTarget = StandaloneAzureTargetSchema.parse(target);
     const entries = setFlags.map(parseAzureSetFlag);
     const result = applyAzureOverrides(parsedTarget, setFlags);
     return {
@@ -128,11 +129,19 @@ export const AZURE_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
     };
   },
   renderHcl: (input) => {
-    const [owner = "owner", repo = input.appName] = input.githubRepo.split("/");
+    const parts = input.githubRepo.trim().split("/");
+    const owner = parts[0]?.trim();
+    const repo = parts[1]?.trim();
+    if (parts.length !== 2 || !owner || !repo) {
+      throw new AzureProviderError(
+        "INVALID_INPUT",
+        `Invalid githubRepo "${input.githubRepo}": expected "<owner>/<repo>" so OIDC subject pinning is exact.`,
+      );
+    }
     return renderAzureHcl({
       appName: input.appName,
       environment: input.environment,
-      target: AzureTargetSchema.parse(input.target),
+      target: StandaloneAzureTargetSchema.parse(input.target),
       ...(input.domain === undefined ? {} : { domain: input.domain }),
       ...(input.dnsProvider === undefined ? {} : { dnsProvider: input.dnsProvider }),
       ...(input.containerPort === undefined ? {} : { containerPort: input.containerPort }),
@@ -149,7 +158,7 @@ export const AZURE_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
       appName: input.appName,
       environment: input.environment,
       workflowPath: `.github/workflows/opscrew-deploy${input.environment === "prod" ? "" : `-${input.environment}`}.yml`,
-      target: AzureTargetSchema.parse(input.target),
+      target: StandaloneAzureTargetSchema.parse(input.target),
       branch: input.branch ?? "main",
       ...(input.clientIdVar === undefined ? {} : { clientIdVar: input.clientIdVar }),
       ...(input.tenantIdVar === undefined ? {} : { tenantIdVar: input.tenantIdVar }),

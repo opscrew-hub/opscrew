@@ -262,7 +262,8 @@ export async function runAzureSnapshotTake(
 
 /**
  * Runs an isolated private PITR restore drill for Azure Flexible Server (ADR 0034).
- * Requires plan-hash approval unless executed under a pre-installed scheduled standing approval.
+ * Always enforces SHA-256 plan-hash approval via `ApprovalGate`: either a fresh per-run approval
+ * or a pre-installed scheduled standing approval verified by `standingApprovalHash`.
  */
 export async function runAzureRestoreDrill(
   deps: PhaseDeps,
@@ -270,7 +271,7 @@ export async function runAzureRestoreDrill(
     readonly snapshotId: string;
     readonly drillInstanceId?: string;
     readonly delegatedSubnetId?: string;
-    readonly standingApproval?: boolean;
+    readonly standingApprovalHash?: string;
   },
 ): Promise<ManagedCloudRestoreDrillResult> {
   const { plan, target } = await resolvePlanAndTarget(deps, options);
@@ -280,7 +281,9 @@ export async function runAzureRestoreDrill(
   const dbId = azureDbServerName(plan.app.name, deps.paths.environment);
   const drillInstanceId = options.drillInstanceId ?? `${dbId}-drill`;
 
-  if (options.standingApproval !== true) {
+  if (options.standingApprovalHash !== undefined) {
+    await deps.approvals.assertApprovedRemoteExec(options.standingApprovalHash);
+  } else {
     const drillHash = createHash("sha256")
       .update(
         JSON.stringify({
@@ -290,6 +293,7 @@ export async function runAzureRestoreDrill(
           region: target.region,
           snapshotId: options.snapshotId,
           drillInstanceId,
+          delegatedSubnetId: options.delegatedSubnetId ?? null,
         }),
       )
       .digest("hex");

@@ -64,3 +64,4 @@ When your domain stays on Cloudflare (`dns.provider: cloudflare`), OpsCrew write
 - `opscrew drift` — compares rendered HCL and runs a refresh-only OpenTofu plan.
 - Backups & PITR restore drills — restores into a private throwaway Flexible Server (`publicNetworkAccess = Disabled`), verifies `Ready`, and confirms deletion after approval.
 - `opscrew destroy` — requires SHA-256 plan-hash approval plus typing your app's name (`allowDestroy: true`).
+

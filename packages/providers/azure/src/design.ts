@@ -6,15 +6,14 @@
  * `existingDb`, `keepCloudflareDns`) and always using Azure Managed Redis (never retiring
  * `azurerm_redis_cache`).
  */
-import {
-  type AzureComponentDecision,
-  type AzureComputeKind,
-  type AzurePins,
-  type AzurePreset,
-  type AzureTarget,
-  AzureTargetSchema,
-  type ProjectFacts,
-  type Requirements,
+import type {
+  AzureComponentDecision,
+  AzureComputeKind,
+  AzurePins,
+  AzurePreset,
+  AzureTarget,
+  ProjectFacts,
+  Requirements,
 } from "@opscrew/plan-schema";
 import {
   AZURE_UNIT_RATES_USD,
@@ -22,6 +21,7 @@ import {
   estimateAzureMonthlyCost,
   regionalUsd,
 } from "./pricing";
+import { StandaloneAzureTargetSchema } from "./schema";
 
 export interface DesignAzureInput {
   readonly facts: ProjectFacts;
@@ -301,7 +301,7 @@ export function designAzureTarget(input: DesignAzureInput): DesignAzureResult {
     };
   }
 
-  const target = AzureTargetSchema.parse({
+  const target: AzureTarget = StandaloneAzureTargetSchema.parse({
     provider: "azure",
     mode: "azure-managed",
     region,

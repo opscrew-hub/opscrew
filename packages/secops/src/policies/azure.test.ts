@@ -207,6 +207,30 @@ describe("038 Azure SecOps plan policies (T3804)", () => {
         values: {},
       },
       {
+        address: "azurerm_federated_identity_credential.pr_sub",
+        type: "azurerm_federated_identity_credential",
+        values: {
+          issuer: "https://token.actions.githubusercontent.com",
+          audience: ["api://AzureADTokenExchange"],
+          subject: "repo:acme/web:pull_request",
+        },
+      },
+      {
+        address: "azurerm_role_assignment.owner_guid",
+        type: "azurerm_role_assignment",
+        values: {
+          scope: "/subscriptions/sub-1/resourceGroups/rg-app",
+          role_definition_id:
+            "/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+        },
+      },
+      {
+        address: "azurerm_postgresql_flexible_server.unknown_pub",
+        type: "azurerm_postgresql_flexible_server",
+        values: {},
+        afterUnknown: { public_network_access_enabled: true },
+      },
+      {
         address: "azurerm_network_security_group.open_db",
         type: "azurerm_network_security_group",
         values: {
@@ -233,7 +257,11 @@ describe("038 Azure SecOps plan policies (T3804)", () => {
     expect(failedIds).toContain("azure-log-retention");
     expect(failedIds).toContain("azure-nsg-no-open-sensitive-ports");
     expect(results.filter((r) => !r.passed && r.policyId === "azure-oidc-strict-sub")).toHaveLength(
-      2,
+      3,
     );
+    expect(
+      results.filter((r) => !r.passed && r.policyId === "azure-rbac-least-privilege"),
+    ).toHaveLength(2);
+    expect(results.filter((r) => !r.passed && r.policyId === "azure-db-private")).toHaveLength(2);
   });
 });

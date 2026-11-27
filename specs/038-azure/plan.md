@@ -21,3 +21,4 @@
 - **Wave 4 (`T3809`–`T3810`):**
   - OpenTofu `tofu init -backend=false && tofu validate` integration test (`packages/providers/azure/src/azurerm.validate.test.ts`, gated by `OPSCREW_DOCKER_TESTS=1` or cached `azurerm` provider) verifying rendered `lean`, `balanced`, and `existingVnetId` HCL modules.
   - Standalone Opus 5.5 high-effort review over `origin/034-aws...HEAD`, fix all findings, and pass full-repo merge gate (`gate-038 exit 0`).
+

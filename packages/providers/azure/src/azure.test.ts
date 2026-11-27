@@ -267,10 +267,13 @@ describe("@opscrew/provider-azure (Wave 2: T3802, T3803, T3805)", () => {
       fetch: fakeFetch,
       env: {
         AZURE_SUBSCRIPTION_ID: "sub-123",
-        AZURE_ACCESS_TOKEN: "tok-test",
+        AZURE_ACCESS_TOKEN: "tok-arm-test",
+        AZURE_KEY_VAULT_ACCESS_TOKEN: "tok-kv-test",
+        AZURE_LOG_ANALYTICS_ACCESS_TOKEN: "tok-log-test",
         AZURE_KEY_VAULT_URL: "https://kv-acme-prod.vault.azure.net",
       },
       redactor: passThroughRedactor,
+      sleep: async () => undefined,
     });
 
     const id = await connector.verifyCredentials();
@@ -301,6 +304,25 @@ describe("@opscrew/provider-azure (Wave 2: T3802, T3803, T3805)", () => {
       identifierPrefix: azureDbServerName("acme", "prod"),
     });
     expect(snaps.map((s) => s.id)).toEqual(["bkp-new", "bkp-old"]);
+
+    const badDrill = await connector.runRestoreDrill({
+      region: "westeurope",
+      snapshotId: "not-a-timestamp",
+      service: "flexible-postgres",
+      drillInstanceId: "opscrew-acme-prod-db-drill",
+    });
+    expect(badDrill.verified).toBe(false);
+    expect(badDrill.cleanedUp).toBe(false);
+
+    await expect(
+      connector.writeSecrets({
+        region: "westeurope",
+        secrets: [
+          { store: "key-vault", name: "FOO_BAR", value: "1" },
+          { store: "key-vault", name: "FOO-BAR", value: "2" },
+        ],
+      }),
+    ).rejects.toThrow(/collision/);
 
     const drill = await connector.runRestoreDrill({
       region: "westeurope",

@@ -35,3 +35,4 @@ Adds **Microsoft Azure** as an official separately-installed managed-cloud provi
 6. **Core Phase Routing, Companion Claude Code Plugin & Guide:**
    - Wire `azure` into `DeployProviderSchema` / `AzureTargetSchema`, `interview` (`context.managedProviders`), `design` (`--set`), `provision` (HCL render, SecOps gate, hash-bound apply, out-of-band Key Vault writes, Cloudflare `asuid` DNS-only `proxied: false` wiring), `status`, `logs`, `verify`, `drift`, `snapshot`/`restore drill`, `rotate`, `advise`, `destroy` (typed confirmation), and `retarget --to azure` (`vm-compose`).
    - Companion Claude Code plugin `plugin-azure/` (`opscrew-azure@opscrew` in `.claude-plugin/marketplace.json`) and user guide `docs/guide/azure.md` linked from `docs/guide/index.md`.
+

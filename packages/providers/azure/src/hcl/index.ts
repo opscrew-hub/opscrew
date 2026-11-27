@@ -1,23 +1,27 @@
 /**
  * Vendored readable OpenTofu/Terraform HCL renderer for Microsoft Azure (Feature 038, T3803).
  *
- * Targets `hashicorp/azurerm ~> 5.0` (5.15.0+). Enforces all Azure defaults and guardrails:
- * - Safe HCL string escaping (`hclString()` with callback so `${` becomes `$${` reliably)
- * - Unified `existingVnetId` locals support
- * - User-Assigned Managed Identity + strict GitHub OIDC `azurerm_federated_identity_credential`
- *   matching workflow `environment:` (`repo:<owner>/<repo>:environment:<env>`, zero wildcards)
- * - Resource-group-scoped least-privilege RBAC (never subscription Owner/Contributor)
- * - Dedicated renderers for `container-apps`, `app-service`, and `vm-compose`
- * - Private PostgreSQL/MySQL Flexible Server (`public_network_access_enabled = false`), AAD auth
- * - Azure Managed Redis (`azurerm_managed_redis`, NEVER retiring `azurerm_redis_cache`)
- * - Private TLS 1.2+ Blob Storage (`shared_access_key_enabled = false`, public access off)
- * - Key Vault shell ONLY (RBAC + purge protection, ZERO `azurerm_key_vault_secret` in state)
- * - Explicit Log Analytics `retention_in_days` (30..730)
- * - `asuid_validation_records` output for Cloudflare DNS-only (`proxied: false`) verification
+ * Targets `hashicorp/azurerm ~> 5.0` (5.15.0+). Incorporates every security & operational guardrail:
+ * - `storage_use_azuread = true` on `provider "azurerm"` (works with `shared_access_key_enabled = false`)
+ * - Separate `deploy` (CI/CD OIDC) and `runtime` (app) User-Assigned Managed Identities so CI never
+ *   gets Key Vault secret read access; current OpsCrew principal receives `Key Vault Secrets Officer`
+ * - Exact wildcard-free GitHub OIDC `azurerm_federated_identity_credential` (`user_assigned_identity_id`)
+ * - Container Apps Consumption `workload_profile` + `lifecycle { ignore_changes }` on live image
+ * - Dedicated renderers for `container-apps`, `app-service`, and `vm-compose` (with cloud-init,
+ *   Docker + `/opt/opscrew/compose.yml`, public IP, and valid Ed25519 placeholder key)
+ * - Private PostgreSQL/MySQL Flexible Server with AAD admin, automatic GP SKU upgrade for HA, and
+ *   private endpoints + RBAC for Azure Managed Redis and Blob Storage
+ * - Complete Azure Front Door origin group + origin + route when `azure-front-door` is selected
+ * - `asuid_validation_records` (`sensitive = true`) for both Container Apps and App Service
  */
 import type { ManagedCloudRenderedFile } from "@opscrew/contracts";
 import type { AzureTarget } from "@opscrew/plan-schema";
-import { azureDbServerName, azureKeyVaultName, azureResourceGroupName } from "../connector";
+import {
+  azureAppResourceName,
+  azureDbServerName,
+  azureKeyVaultName,
+  azureResourceGroupName,
+} from "../connector";
 
 export const AZURE_PROVIDER_VERSION = "~> 5.0";
 
@@ -81,6 +85,8 @@ terraform {
 }
 
 provider "azurerm" {
+  storage_use_azuread = true
+
   features {
     key_vault {
       purge_soft_delete_on_destroy = false
@@ -112,8 +118,14 @@ variable "location" {
 
 variable "container_image" {
   type        = string
-  description = "Container image deployed to Azure compute."
+  description = "Initial bootstrap image; live updates are pushed by GitHub Actions OIDC."
   default     = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
+}
+
+variable "container_registry_url" {
+  type        = string
+  description = "Container registry host (e.g., https://ghcr.io)."
+  default     = "https://ghcr.io"
 }
 
 variable "container_port" {
@@ -122,10 +134,28 @@ variable "container_port" {
   default     = ${port}
 }
 
+variable "app_subnet_cidr" {
+  type        = string
+  description = "CIDR block for the application subnet (override when pinning existingVnetId)."
+  default     = "10.42.0.0/23"
+}
+
+variable "db_subnet_cidr" {
+  type        = string
+  description = "CIDR block for the delegated database subnet."
+  default     = "10.42.10.0/24"
+}
+
+variable "pe_subnet_cidr" {
+  type        = string
+  description = "CIDR block for private endpoints (Blob Storage, Azure Managed Redis)."
+  default     = "10.42.12.0/24"
+}
+
 variable "ssh_public_key" {
   type        = string
-  description = "SSH public key for vm-compose targets (unused by Container Apps / App Service)."
-  default     = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOpsCrewPlaceholderKeyForValidationOnly opscrew"
+  description = "SSH public key for vm-compose targets (replace before applying vm-compose)."
+  default     = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl opscrew-placeholder"
 }
 `;
 }
@@ -162,7 +192,11 @@ resource "azurerm_log_analytics_workspace" "app" {
 function renderNetworkTf(ctx: RenderAzureHclContext): string {
   const existingVnetId = ctx.target.pins.existingVnetId;
   const hasDb = ctx.target.components.database !== undefined;
+  const publicDb = ctx.target.guardrails.privateDatabase === false;
+  const needsPrivateDbSubnet = hasDb && !publicDb;
   const isMysql = ctx.target.components.database?.service === "flexible-mysql";
+  const hasPrivateEndpoints =
+    ctx.target.components.storage !== undefined || ctx.target.components.cache !== undefined;
   const natEnabled = ctx.target.components.network?.config.natGateway === true;
   const vnetName = `vnet-opscrew-${ctx.appName}-${ctx.environment}`.slice(0, 64);
 
@@ -220,13 +254,23 @@ locals {
   }`
         : "";
 
-  const dbBlock = hasDb
+  const nsgAssoc =
+    ctx.target.compute !== "vm-compose"
+      ? `
+resource "azurerm_subnet_network_security_group_association" "app" {
+  subnet_id                 = azurerm_subnet.app.id
+  network_security_group_id = azurerm_network_security_group.app.id
+}
+`
+      : "";
+
+  const dbBlock = needsPrivateDbSubnet
     ? `
 resource "azurerm_subnet" "db" {
   name                 = "snet-db"
   resource_group_name  = local.active_vnet_rg
   virtual_network_name = local.active_vnet_name
-  address_prefixes     = ["10.42.10.0/24"]
+  address_prefixes     = [var.db_subnet_cidr]
 
   delegation {
     name = "db-delegation"
@@ -246,6 +290,18 @@ resource "azurerm_private_dns_zone_virtual_network_link" "db" {
   name                = "link-db-vnet"
   private_dns_zone_id = azurerm_private_dns_zone.db.id
   virtual_network_id  = local.active_vnet_id
+}
+`
+    : "";
+
+  const peBlock = hasPrivateEndpoints
+    ? `
+resource "azurerm_subnet" "private_endpoints" {
+  name                              = "snet-pe"
+  resource_group_name               = local.active_vnet_rg
+  virtual_network_name              = local.active_vnet_name
+  address_prefixes                  = [var.pe_subnet_cidr]
+  private_endpoint_network_policies = "Disabled"
 }
 `
     : "";
@@ -284,7 +340,7 @@ resource "azurerm_subnet" "app" {
   name                 = "snet-app"
   resource_group_name  = local.active_vnet_rg
   virtual_network_name = local.active_vnet_name
-  address_prefixes     = ["10.42.0.0/23"]${appSubnetDelegation}
+  address_prefixes     = [var.app_subnet_cidr]${appSubnetDelegation}
 }
 
 resource "azurerm_network_security_group" "app" {
@@ -304,7 +360,7 @@ resource "azurerm_network_security_group" "app" {
     destination_address_prefix = "*"
   }
 }
-${dbBlock}${natBlock}`;
+${nsgAssoc}${dbBlock}${peBlock}${natBlock}`;
 }
 
 function renderIamTf(ctx: RenderAzureHclContext): string {
@@ -316,8 +372,15 @@ function renderIamTf(ctx: RenderAzureHclContext): string {
         ? "Virtual Machine Contributor"
         : "Container Apps Contributor";
 
-  return `resource "azurerm_user_assigned_identity" "deploy" {
-  name                = ${hclString(`id-opscrew-${ctx.appName}-${ctx.environment}`)}
+  return `# Separate CI/CD deploy identity (no Key Vault read access) and app runtime identity.
+resource "azurerm_user_assigned_identity" "deploy" {
+  name                = ${hclString(`id-opscrew-deploy-${ctx.appName}-${ctx.environment}`)}
+  location            = azurerm_resource_group.app.location
+  resource_group_name = azurerm_resource_group.app.name
+}
+
+resource "azurerm_user_assigned_identity" "runtime" {
+  name                = ${hclString(`id-opscrew-runtime-${ctx.appName}-${ctx.environment}`)}
   location            = azurerm_resource_group.app.location
   resource_group_name = azurerm_resource_group.app.name
 }
@@ -335,11 +398,17 @@ resource "azurerm_role_assignment" "deploy_rg" {
   role_definition_name = ${hclString(deployRole)}
   principal_id         = azurerm_user_assigned_identity.deploy.principal_id
 }
+
+resource "azurerm_role_assignment" "deploy_assign_runtime_id" {
+  scope                = azurerm_user_assigned_identity.runtime.id
+  role_definition_name = "Managed Identity Operator"
+  principal_id         = azurerm_user_assigned_identity.deploy.principal_id
+}
 `;
 }
 
 function renderComputeTf(ctx: RenderAzureHclContext): string {
-  const name = `opscrew-${ctx.appName}-${ctx.environment}`;
+  const name = azureAppResourceName(ctx.appName, ctx.environment);
   const computeCfg = ctx.target.components.compute?.config ?? {};
 
   if (ctx.target.compute === "app-service") {
@@ -362,13 +431,18 @@ resource "azurerm_linux_web_app" "app" {
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.deploy.id]
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
   }
 
   site_config {
     application_stack {
-      docker_image_name = var.container_image
+      docker_image_name   = var.container_image
+      docker_registry_url = var.container_registry_url
     }
+  }
+
+  lifecycle {
+    ignore_changes = [site_config[0].application_stack[0].docker_image_name]
   }
 }
 
@@ -380,7 +454,34 @@ locals {
 
   if (ctx.target.compute === "vm-compose") {
     const size = typeof computeCfg.vmSize === "string" ? computeCfg.vmSize : "Standard_B2ats_v2";
-    return `resource "azurerm_network_interface" "app" {
+    const cloudInit = `#cloud-config
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+write_files:
+  - path: /opt/opscrew/compose.yml
+    permissions: "0644"
+    content: |
+      services:
+        app:
+          image: \${OPSCREW_IMAGE:-mcr.microsoft.com/azuredocs/containerapps-helloworld:latest}
+          restart: unless-stopped
+          ports:
+            - "443:${ctx.containerPort ?? 3000}"
+runcmd:
+  - systemctl enable --now docker
+  - mkdir -p /opt/opscrew
+`;
+    return `resource "azurerm_public_ip" "app" {
+  name                = ${hclString(`pip-${name}`)}
+  location            = azurerm_resource_group.app.location
+  resource_group_name = azurerm_resource_group.app.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+}
+
+resource "azurerm_network_interface" "app" {
   name                = ${hclString(`nic-${name}`)}
   location            = azurerm_resource_group.app.location
   resource_group_name = azurerm_resource_group.app.name
@@ -389,6 +490,7 @@ locals {
     name                          = "internal"
     subnet_id                     = azurerm_subnet.app.id
     private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = azurerm_public_ip.app.id
   }
 }
 
@@ -405,10 +507,11 @@ resource "azurerm_linux_virtual_machine" "app" {
   admin_username                  = "deploy"
   disable_password_authentication = true
   network_interface_ids           = [azurerm_network_interface.app.id]
+  custom_data                     = base64encode(${hclString(cloudInit)})
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.deploy.id]
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
   }
 
   admin_ssh_key {
@@ -430,12 +533,12 @@ resource "azurerm_linux_virtual_machine" "app" {
 }
 
 locals {
-  app_fqdn = azurerm_network_interface.app.private_ip_address
+  app_fqdn = azurerm_public_ip.app.ip_address
 }
 `;
   }
 
-  // Default: Azure Container Apps Consumption
+  // Default: Azure Container Apps Consumption (with workload_profile for VNet delegation compatibility)
   const minReplicas = typeof computeCfg.minReplicas === "number" ? computeCfg.minReplicas : 0;
   const maxReplicas = typeof computeCfg.maxReplicas === "number" ? computeCfg.maxReplicas : 3;
   const cpu = typeof computeCfg.cpu === "number" ? computeCfg.cpu : 0.5;
@@ -449,6 +552,11 @@ locals {
   log_analytics_workspace_id = azurerm_log_analytics_workspace.app.id
   infrastructure_subnet_id   = azurerm_subnet.app.id
   zone_redundancy_enabled    = ${zoneRedundant ? "true" : "false"}
+
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 resource "azurerm_container_app" "app" {
@@ -456,10 +564,11 @@ resource "azurerm_container_app" "app" {
   container_app_environment_id = azurerm_container_app_environment.app.id
   resource_group_name          = azurerm_resource_group.app.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
 
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.deploy.id]
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
   }
 
   template {
@@ -483,6 +592,10 @@ resource "azurerm_container_app" "app" {
       latest_revision = true
     }
   }
+
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
 }
 
 locals {
@@ -496,45 +609,75 @@ function renderDatabaseTf(ctx: RenderAzureHclContext): string | undefined {
   if (db === undefined) return undefined;
   const serverName = azureDbServerName(ctx.appName, ctx.environment);
   const publicAccess = ctx.target.guardrails.privateDatabase === false;
-  const sku = typeof db.config.sku === "string" ? db.config.sku : "B_Standard_B1ms";
+  const zoneRedundant = db.config.zoneRedundant === true;
+  const geoRedundant =
+    db.config.geoRedundantBackup === true ||
+    (db.config.geoRedundantBackup !== false && zoneRedundant);
+  let sku = typeof db.config.sku === "string" ? db.config.sku : "B_Standard_B1ms";
+  // Azure does not support ZoneRedundant HA on Burstable (`B_*`) SKUs; auto-upgrade to GP tier.
+  if (zoneRedundant && sku.startsWith("B_")) {
+    sku = "GP_Standard_D2ds_v5";
+  }
   const retention =
     typeof db.config.backupRetentionDays === "number" ? db.config.backupRetentionDays : 7;
-  const zoneRedundant = db.config.zoneRedundant === true;
+
+  const privateNetAttrs = publicAccess
+    ? `  public_network_access_enabled = true`
+    : `  delegated_subnet_id           = azurerm_subnet.db.id
+  private_dns_zone_id           = azurerm_private_dns_zone.db.id
+  public_network_access_enabled = false`;
+  const privateDeps = publicAccess
+    ? ""
+    : `\n  depends_on = [azurerm_private_dns_zone_virtual_network_link.db]\n`;
 
   if (db.service === "flexible-mysql") {
     return `resource "azurerm_mysql_flexible_server" "app" {
-  name                          = ${hclString(serverName)}
-  resource_group_name           = azurerm_resource_group.app.name
-  location                      = azurerm_resource_group.app.location
-  sku_name                      = ${hclString(sku)}
-  version                       = "8.0.21"
-  delegated_subnet_id           = azurerm_subnet.db.id
-  private_dns_zone_id           = azurerm_private_dns_zone.db.id
-  public_network_access_enabled = ${publicAccess ? "true" : "false"}
-  backup_retention_days         = ${retention}
-  geo_redundant_backup_enabled  = ${zoneRedundant ? "true" : "false"}
+  name                         = ${hclString(serverName)}
+  resource_group_name          = azurerm_resource_group.app.name
+  location                     = azurerm_resource_group.app.location
+  sku_name                     = ${hclString(sku)}
+  version                      = "8.0.21"
+${privateNetAttrs}
+  backup_retention_days        = ${retention}
+  geo_redundant_backup_enabled = ${geoRedundant ? "true" : "false"}
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.runtime.id]
+  }
 
   storage {
     size_gb = 32
   }
+${
+  zoneRedundant
+    ? `
+  high_availability {
+    mode = "ZoneRedundant"
+  }`
+    : ""
+}${privateDeps}}
 
-  depends_on = [azurerm_private_dns_zone_virtual_network_link.db]
+resource "azurerm_mysql_flexible_server_active_directory_administrator" "runtime" {
+  server_id   = azurerm_mysql_flexible_server.app.id
+  identity_id = azurerm_user_assigned_identity.runtime.id
+  login       = azurerm_user_assigned_identity.runtime.name
+  object_id   = azurerm_user_assigned_identity.runtime.principal_id
+  tenant_id   = data.azurerm_client_config.current.tenant_id
 }
 `;
   }
 
   return `resource "azurerm_postgresql_flexible_server" "app" {
-  name                          = ${hclString(serverName)}
-  resource_group_name           = azurerm_resource_group.app.name
-  location                      = azurerm_resource_group.app.location
-  version                       = "16"
-  sku_name                      = ${hclString(sku)}
-  storage_mb                    = 32768
-  delegated_subnet_id           = azurerm_subnet.db.id
-  private_dns_zone_id           = azurerm_private_dns_zone.db.id
-  public_network_access_enabled = ${publicAccess ? "true" : "false"}
-  backup_retention_days         = ${retention}
-  geo_redundant_backup_enabled  = ${zoneRedundant ? "true" : "false"}
+  name                         = ${hclString(serverName)}
+  resource_group_name          = azurerm_resource_group.app.name
+  location                     = azurerm_resource_group.app.location
+  version                      = "16"
+  sku_name                     = ${hclString(sku)}
+  storage_mb                   = 32768
+${privateNetAttrs}
+  backup_retention_days        = ${retention}
+  geo_redundant_backup_enabled = ${geoRedundant ? "true" : "false"}
 
   authentication {
     active_directory_auth_enabled = true
@@ -548,8 +691,15 @@ ${
     mode = "ZoneRedundant"
   }`
     : ""
-}
-  depends_on = [azurerm_private_dns_zone_virtual_network_link.db]
+}${privateDeps}}
+
+resource "azurerm_postgresql_flexible_server_active_directory_administrator" "runtime" {
+  server_name         = azurerm_postgresql_flexible_server.app.name
+  resource_group_name = azurerm_resource_group.app.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  object_id           = azurerm_user_assigned_identity.runtime.principal_id
+  principal_name      = azurerm_user_assigned_identity.runtime.name
+  principal_type      = "ServicePrincipal"
 }
 `;
 }
@@ -560,7 +710,7 @@ function renderCacheTf(ctx: RenderAzureHclContext): string | undefined {
   const sku = typeof cache.config.sku === "string" ? cache.config.sku : "Balanced_B0";
   const ha = cache.config.highAvailability === true;
 
-  return `# Azure Managed Redis (replaces retiring azurerm_redis_cache)
+  return `# Azure Managed Redis (replaces retiring Azure Cache for Redis) + Private Endpoint
 resource "azurerm_managed_redis" "app" {
   name                      = ${hclString(`amr-${ctx.appName}-${ctx.environment}`.slice(0, 63))}
   resource_group_name       = azurerm_resource_group.app.name
@@ -574,6 +724,20 @@ resource "azurerm_managed_redis" "app" {
     client_protocol                    = "Encrypted"
     clustering_policy                  = "OSSCluster"
     eviction_policy                    = "VolatileLRU"
+  }
+}
+
+resource "azurerm_private_endpoint" "cache" {
+  name                = ${hclString(`pe-amr-${ctx.appName}-${ctx.environment}`)}
+  location            = azurerm_resource_group.app.location
+  resource_group_name = azurerm_resource_group.app.name
+  subnet_id           = azurerm_subnet.private_endpoints.id
+
+  private_service_connection {
+    name                           = "psc-managed-redis"
+    private_connection_resource_id = azurerm_managed_redis.app.id
+    subresource_names              = ["redisEnterprise"]
+    is_manual_connection           = false
   }
 }
 `;
@@ -597,12 +761,32 @@ function renderStorageTf(ctx: RenderAzureHclContext): string | undefined {
   public_network_access           = ${publicAccess ? '"Enabled"' : '"Disabled"'}
   shared_access_key_enabled       = false
 }
+
+resource "azurerm_private_endpoint" "storage_blob" {
+  name                = ${hclString(`pe-blob-${ctx.appName}-${ctx.environment}`)}
+  location            = azurerm_resource_group.app.location
+  resource_group_name = azurerm_resource_group.app.name
+  subnet_id           = azurerm_subnet.private_endpoints.id
+
+  private_service_connection {
+    name                           = "psc-blob"
+    private_connection_resource_id = azurerm_storage_account.app.id
+    subresource_names              = ["blob"]
+    is_manual_connection           = false
+  }
+}
+
+resource "azurerm_role_assignment" "runtime_storage_blob" {
+  scope                = azurerm_storage_account.app.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.runtime.principal_id
+}
 `;
 }
 
 function renderSecretsTf(ctx: RenderAzureHclContext): string {
   const kvName = azureKeyVaultName(ctx.appName, ctx.environment);
-  return `# Key Vault shell ONLY — zero azurerm_key_vault_secret resources so secret values never enter .tfstate.
+  return `# Key Vault shell ONLY — zero Key Vault secret resources so secret values never enter .tfstate.
 resource "azurerm_key_vault" "app" {
   name                       = ${hclString(kvName)}
   location                   = azurerm_resource_group.app.location
@@ -614,10 +798,18 @@ resource "azurerm_key_vault" "app" {
   soft_delete_retention_days = 7
 }
 
-resource "azurerm_role_assignment" "kv_secrets_user" {
+# Only the app runtime identity can read secrets; CI/CD deploy identity cannot.
+resource "azurerm_role_assignment" "kv_runtime_secrets_user" {
   scope                = azurerm_key_vault.app.id
   role_definition_name = "Key Vault Secrets User"
-  principal_id         = azurerm_user_assigned_identity.deploy.principal_id
+  principal_id         = azurerm_user_assigned_identity.runtime.principal_id
+}
+
+# Grants the operator/service principal running OpsCrew out-of-band secret write rights.
+resource "azurerm_role_assignment" "kv_operator_secrets_officer" {
+  scope                = azurerm_key_vault.app.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 `;
 }
@@ -636,20 +828,62 @@ resource "azurerm_cdn_frontdoor_endpoint" "app" {
   name                     = ${hclString(`afde-${ctx.appName}-${ctx.environment}`)}
   cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.app.id
 }
+
+resource "azurerm_cdn_frontdoor_origin_group" "app" {
+  name                     = "og-app"
+  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.app.id
+
+  load_balancing {
+    sample_size                 = 4
+    successful_samples_required = 3
+  }
+}
+
+resource "azurerm_cdn_frontdoor_origin" "app" {
+  name                           = "origin-app"
+  cdn_frontdoor_origin_group_id  = azurerm_cdn_frontdoor_origin_group.app.id
+  enabled                        = true
+  host_name                      = local.app_fqdn
+  http_port                      = 80
+  https_port                     = 443
+  origin_host_header             = local.app_fqdn
+  priority                       = 1
+  weight                         = 1000
+  certificate_name_check_enabled = true
+}
+
+resource "azurerm_cdn_frontdoor_route" "app" {
+  name                          = "route-app"
+  cdn_frontdoor_endpoint_id     = azurerm_cdn_frontdoor_endpoint.app.id
+  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.app.id
+  cdn_frontdoor_origin_ids      = [azurerm_cdn_frontdoor_origin.app.id]
+  supported_protocols           = ["Http", "Https"]
+  patterns_to_match             = ["/*"]
+  forwarding_protocol           = "HttpsOnly"
+  https_redirect_enabled        = true
+}
 `;
 }
 
 function renderOutputsTf(ctx: RenderAzureHclContext): string {
+  const hasDomain = ctx.domain !== undefined && ctx.domain.length > 0;
+  const verificationExpr =
+    ctx.target.compute === "container-apps"
+      ? "azurerm_container_app.app.custom_domain_verification_id"
+      : ctx.target.compute === "app-service"
+        ? "azurerm_linux_web_app.app.custom_domain_verification_id"
+        : undefined;
+
   const asuidOutput =
-    ctx.domain !== undefined && ctx.domain.length > 0 && ctx.target.compute === "container-apps"
+    hasDomain && verificationExpr !== undefined
       ? `
 output "asuid_validation_records" {
-  description = "Custom-domain TXT verification record for Azure Container Apps (must be DNS-only / proxied = false on Cloudflare)."
+  description = "Custom-domain TXT verification record for Azure (must be DNS-only / proxied = false on Cloudflare)."
   sensitive   = true
   value = [
     {
       name  = ${hclString(`asuid.${ctx.domain}`)}
-      value = azurerm_container_app.app.custom_domain_verification_id
+      value = ${verificationExpr}
     }
   ]
 }

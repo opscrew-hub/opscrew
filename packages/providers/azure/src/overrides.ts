@@ -3,9 +3,10 @@
  * (Feature 038, T3802, ADR 0040 D6). Re-validates guardrails, re-prices, and returns a plain-English
  * cost & field diff before apply.
  */
-import { type AzureTarget, AzureTargetSchema } from "@opscrew/plan-schema";
+import type { AzureTarget } from "@opscrew/plan-schema";
 import { AzureProviderError } from "./connector";
 import { AZURE_UNIT_RATES_USD, estimateAzureMonthlyCost, regionalUsd, roundUsd } from "./pricing";
+import { StandaloneAzureTargetSchema } from "./schema";
 
 export interface AzureOverrideEntry {
   readonly path: string;
@@ -197,7 +198,7 @@ export function applyAzureOverrides(
     throw new AzureProviderError("INVALID_INPUT", `Unsupported --set override "${expr}".`);
   }
 
-  const parsed = AzureTargetSchema.safeParse(draft);
+  const parsed = StandaloneAzureTargetSchema.safeParse(draft);
   if (!parsed.success) {
     const first = parsed.error.issues[0];
     const where = first?.path.join(".") ?? "target";

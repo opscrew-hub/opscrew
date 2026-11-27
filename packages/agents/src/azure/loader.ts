@@ -54,14 +54,17 @@ export async function loadAzurePlugin(
 export function resolveAzureConnector(
   plugin: ManagedCloudProviderDefinition,
   deps: Pick<PhaseDeps, "fetch" | "env" | "redactor" | "clock">,
-  options: AzurePluginOptions = {},
+  options: AzurePluginOptions & {
+    readonly envOverrides?: Readonly<Record<string, string | undefined>>;
+  } = {},
 ): ManagedCloudConnector {
   if (options.connector !== undefined) return options.connector;
   return plugin.createConnector({
     fetch: deps.fetch,
-    env: deps.env,
+    env: options.envOverrides === undefined ? deps.env : { ...deps.env, ...options.envOverrides },
     redactor: deps.redactor,
     now: () => deps.clock.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
 }
 

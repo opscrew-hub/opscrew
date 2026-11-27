@@ -70,7 +70,7 @@ describe("opscrew program", () => {
     ]) {
       expect(ctx.output).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
     }
-    expect(ALL_COMMANDS).toHaveLength(35);
+    expect(ALL_COMMANDS).toHaveLength(36);
   });
 
   it("exits 2 for an unknown command", async () => {

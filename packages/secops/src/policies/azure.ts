@@ -2,29 +2,48 @@
  * Deterministic Microsoft Azure static policy checks on OpenTofu/Terraform plan JSON
  * (Feature 038, T3804, ADR 0040 D11).
  *
- * Fail-closed checks run BEFORE any apply approval:
+ * Fail-closed checks run BEFORE any apply approval (every sensitive attribute in `after_unknown`
+ * fails closed):
  * 1. GitHub OIDC Federated Identity Credential (`azurerm_federated_identity_credential`): exact
- *    `issuer`, `audience = ["api://AzureADTokenExchange"]`, and wildcard-free `repo:` `subject`
- *    (fails closed if `subject` or `issuer` is unknown in `after_unknown`).
- * 2. Least-privilege RBAC (`azurerm_role_assignment`): blocks `Owner` / `User Access Administrator`
- *    and blocks subscription-wide `Contributor` (fails closed when role/scope is unknown).
+ *    `issuer`, `audience = ["api://AzureADTokenExchange"]`, and strict wildcard-free `subject`
+ *    pinned to `repo:<owner>/<repo>:environment:<env>` or `ref:refs/heads/<branch>` (rejects
+ *    `pull_request` and wildcards).
+ * 2. Least-privilege RBAC (`azurerm_role_assignment`): blocks `Owner`, `User Access Administrator`,
+ *    `Role Based Access Control Administrator` (by name OR built-in role GUID) and blocks
+ *    subscription-wide `Contributor`; fails closed when role or scope is unknown.
  * 3. Blocks retiring Azure Cache for Redis (`azurerm_redis_cache`) in favor of `azurerm_managed_redis`.
- * 4. Private Flexible Server (`public_network_access_enabled = false`) unless explicitly excepted.
- * 5. Private TLS 1.2+ Storage (`allow_nested_items_to_be_public = false`, `min_tls_version = "TLS1_2"`,
- *    `https_traffic_only_enabled = true`) unless explicitly excepted.
+ * 4. Private Flexible Server (`public_network_access_enabled = false`, fail-closed on unknown).
+ * 5. Private TLS 1.2+/1.3 Storage (`allow_nested_items_to_be_public = false`,
+ *    `public_network_access = "Disabled"`, `min_tls_version` in `TLS1_2`/`TLS1_3`,
+ *    `https_traffic_only_enabled = true`, fail-closed on unknown).
  * 6. Zero plaintext secrets in `.tfstate`: blocks `azurerm_key_vault_secret`.
- * 7. Blocking `high` check for Log Analytics `retention_in_days` >= 30.
+ * 7. Blocking `high` check for Log Analytics `retention_in_days` in `30..730`.
  * 8. NSG rules (`azurerm_network_security_group` / `azurerm_network_security_rule`) cannot expose
- *    SSH/DB/cache ports (22, 3306, 5432, 6379, 27017) to `Internet`, `*`, `0.0.0.0/0`, or `::/0`.
+ *    SSH/DB/cache ports (22, 3306, 5432, 6379, 27017) to open sources (case-insensitive).
  */
 import type { PlannedResourceJson, PolicyResult, Severity } from "@opscrew/contracts";
 import { isRecord } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { plannedResources } from "./plan";
 
-const DANGEROUS_ROLES = new Set(["Owner", "User Access Administrator"]);
-const OPEN_SOURCES = new Set(["*", "Internet", "Any", "0.0.0.0/0", "::/0"]);
+const DANGEROUS_ROLES = new Set([
+  "owner",
+  "user access administrator",
+  "role based access control administrator",
+]);
+
+/** Built-in Azure RBAC role definition GUIDs for Owner, UAA, and RBAC Administrator. */
+const DANGEROUS_ROLE_GUIDS = [
+  "8e3af657-a8ff-443c-a75c-2fe8c4bcb635", // Owner
+  "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9", // User Access Administrator
+  "f58310d9-a9f6-439a-9e8d-f62e7b41a168", // Role Based Access Control Administrator
+];
+
+const CONTRIBUTOR_GUID = "b24988ac-6180-42a0-ab88-20f7382dd24c";
+const OPEN_SOURCES_LOWER = new Set(["*", "internet", "any", "0.0.0.0/0", "::/0"]);
 const SENSITIVE_PORTS = new Set([22, 3306, 5432, 6379, 27017]);
+const STRICT_OIDC_SUB_RE =
+  /^repo:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+:(?:environment:[^\s*]+|ref:refs\/heads\/[^\s*]+)$/;
 
 function policy(
   policyId: string,
@@ -77,12 +96,8 @@ function checkOidcCredentials(resources: readonly PlannedResourceJson[]): Policy
       violation = `Federated identity issuer must be "https://token.actions.githubusercontent.com" (got ${String(issuer)}).`;
     } else if (!audience.includes("api://AzureADTokenExchange") || audience.length !== 1) {
       violation = `Federated identity audience must be exactly ["api://AzureADTokenExchange"] (got ${JSON.stringify(audience)}).`;
-    } else if (
-      typeof subject !== "string" ||
-      !subject.startsWith("repo:") ||
-      subject.includes("*")
-    ) {
-      violation = `Federated identity subject must pin one GitHub repo/environment without wildcards (got ${String(subject)}).`;
+    } else if (typeof subject !== "string" || !STRICT_OIDC_SUB_RE.test(subject)) {
+      violation = `Federated identity subject must pin one GitHub repo and environment/branch without wildcards or pull_request claims (got ${String(subject)}).`;
     }
 
     out.push(
@@ -104,19 +119,28 @@ function checkRbac(resources: readonly PlannedResourceJson[]): PolicyResult[] {
   const out: PolicyResult[] = [];
   for (const r of resources) {
     if (r.type !== "azurerm_role_assignment") continue;
-    const unknownRole = r.unknown?.role_definition_name === true;
-    const role =
-      typeof r.values.role_definition_name === "string" ? r.values.role_definition_name : "";
+    const unknownRole =
+      r.unknown?.role_definition_name === true || r.unknown?.role_definition_id === true;
+    const unknownScope = r.unknown?.scope === true;
+    const roleName =
+      typeof r.values.role_definition_name === "string" ? r.values.role_definition_name.trim() : "";
+    const roleId =
+      typeof r.values.role_definition_id === "string"
+        ? r.values.role_definition_id.toLowerCase()
+        : "";
     const scope = typeof r.values.scope === "string" ? r.values.scope : "";
-    const isSubscriptionScope = /^\/subscriptions\/[^/]+\/?$/.test(scope);
+    const isSubscriptionScope = /^\/subscriptions\/[^/]+\/?$/i.test(scope);
+    const matchesDangerousGuid = DANGEROUS_ROLE_GUIDS.some((g) => roleId.includes(g));
+    const isContributor =
+      roleName.toLowerCase() === "contributor" || roleId.includes(CONTRIBUTOR_GUID);
 
     let violation: string | undefined;
     if (unknownRole) {
-      violation = `${r.address} has an unknown role_definition_name at plan time (fail-closed).`;
-    } else if (DANGEROUS_ROLES.has(role)) {
-      violation = `${r.address} assigns overly broad role "${role}"; use a least-privilege resource-group role.`;
-    } else if (role === "Contributor" && isSubscriptionScope) {
-      violation = `${r.address} assigns subscription-wide Contributor; scope role assignments to the app's resource group.`;
+      violation = `${r.address} has an unknown role_definition_name or role_definition_id at plan time (fail-closed).`;
+    } else if (DANGEROUS_ROLES.has(roleName.toLowerCase()) || matchesDangerousGuid) {
+      violation = `${r.address} assigns overly broad role "${roleName || roleId}"; use a least-privilege resource-group role.`;
+    } else if (isContributor && (isSubscriptionScope || unknownScope)) {
+      violation = `${r.address} assigns Contributor at subscription or unknown scope; scope role assignments to the app's resource group.`;
     }
 
     out.push(
@@ -125,7 +149,7 @@ function checkRbac(resources: readonly PlannedResourceJson[]): PolicyResult[] {
         "Azure RBAC assignment follows least privilege",
         "critical",
         violation === undefined,
-        violation ?? `${r.address} assigns scoped role "${role || "custom"}".`,
+        violation ?? `${r.address} assigns scoped role "${roleName || roleId || "custom"}".`,
         r.address,
       ),
     );
@@ -150,18 +174,21 @@ function checkDatabasesAndCache(
       r.type === "azurerm_postgresql_flexible_server" ||
       r.type === "azurerm_mysql_flexible_server"
     ) {
-      const isPublic = r.values.public_network_access_enabled === true;
+      const isUnknown = r.unknown?.public_network_access_enabled === true;
+      const isPrivate = !isUnknown && r.values.public_network_access_enabled === false;
       out.push(
         policy(
           "azure-db-private",
           "Azure Flexible Server disables public network access",
           "critical",
-          !isPublic || allowPublicDb,
-          !isPublic
+          isPrivate || allowPublicDb,
+          isPrivate
             ? `${r.address} sets public_network_access_enabled = false.`
             : allowPublicDb
               ? `${r.address} allows public access under a recorded guardrail exception.`
-              : `${r.address} sets public_network_access_enabled = true without a recorded guardrail exception.`,
+              : isUnknown
+                ? `${r.address} has unknown public_network_access_enabled at plan time (fail-closed).`
+                : `${r.address} sets public_network_access_enabled = ${String(r.values.public_network_access_enabled)} without a recorded guardrail exception.`,
           r.address,
         ),
       );
@@ -195,16 +222,22 @@ function checkStorageSecretsAndLogs(
 
   for (const r of resources) {
     if (r.type === "azurerm_storage_account") {
-      const publicItems = r.values.allow_nested_items_to_be_public === true;
+      const unknownPrivacy =
+        r.unknown?.allow_nested_items_to_be_public === true ||
+        r.unknown?.public_network_access === true ||
+        r.unknown?.min_tls_version === true;
+      const publicItems = r.values.allow_nested_items_to_be_public !== false;
       const publicNet =
         r.values.public_network_access === "Enabled" ||
         r.values.public_network_access_enabled === true;
       const minTls = r.values.min_tls_version;
+      const tlsOk = minTls === "TLS1_2" || minTls === "TLS1_3";
       const httpsOnly = r.values.https_traffic_only_enabled !== false;
       const ok =
+        !unknownPrivacy &&
         (!publicItems || allowPublicStorage) &&
         (!publicNet || allowPublicStorage) &&
-        minTls === "TLS1_2" &&
+        tlsOk &&
         httpsOnly;
       out.push(
         policy(
@@ -214,7 +247,9 @@ function checkStorageSecretsAndLogs(
           ok,
           ok
             ? `${r.address} enforces TLS 1.2+, HTTPS-only, and private blob access.`
-            : `${r.address} violates private/TLS 1.2+ storage policy (allow_nested_items_to_be_public=${String(publicItems)}, public_network_access=${String(r.values.public_network_access ?? r.values.public_network_access_enabled)}, min_tls_version=${String(minTls)}, https_traffic_only_enabled=${String(httpsOnly)}).`,
+            : unknownPrivacy
+              ? `${r.address} has unknown privacy or TLS settings at plan time (fail-closed).`
+              : `${r.address} violates private/TLS 1.2+ storage policy (allow_nested_items_to_be_public=${String(r.values.allow_nested_items_to_be_public)}, public_network_access=${String(r.values.public_network_access ?? r.values.public_network_access_enabled)}, min_tls_version=${String(minTls)}, https_traffic_only_enabled=${String(httpsOnly)}).`,
           r.address,
         ),
       );
@@ -261,7 +296,8 @@ function checkNetworkSecurityGroups(resources: readonly PlannedResourceJson[]): 
       ...stringList(rule.source_address_prefix),
       ...stringList(rule.source_address_prefixes),
     ];
-    if (!sources.some((s) => OPEN_SOURCES.has(s))) return;
+    const openMatches = sources.filter((s) => OPEN_SOURCES_LOWER.has(s.trim().toLowerCase()));
+    if (openMatches.length === 0) return;
     const ports = [
       ...stringList(rule.destination_port_range),
       ...stringList(rule.destination_port_ranges),
@@ -275,7 +311,7 @@ function checkNetworkSecurityGroups(resources: readonly PlannedResourceJson[]): 
             "Azure NSG does not expose database/cache/SSH ports to the internet",
             "critical",
             false,
-            `${address} rule "${String(rule.name ?? "unnamed")}" exposes port ${exposed} (range ${spec}) to ${sources.filter((s) => OPEN_SOURCES.has(s)).join(", ")}.`,
+            `${address} rule "${String(rule.name ?? "unnamed")}" exposes port ${exposed} (range ${spec}) to ${openMatches.join(", ")}.`,
             address,
           ),
         );
