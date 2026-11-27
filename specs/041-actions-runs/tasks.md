@@ -34,6 +34,6 @@
 
 ## Wave 5: Guide Docs & Full-Repo Gate
 
-- [ ] **T4108 — User & operator guide (`docs/guide/actions-runs.md`) and full-repo gate**
+- [x] **T4108 — User & operator guide (`docs/guide/actions-runs.md`) and full-repo gate**
   - Write `docs/guide/actions-runs.md` covering the two-run model, `report.json` v1, sealed secret handoff, `OPSCREW_RECOVERY_KEY`, Anthropic/OpenAI WIF setup, and self-hosted runner cost savings.
   - Run full-repo gate (`pnpm lint`, `pnpm typecheck`, all Turbo test packages) on `041-actions-runs` and verify `gate exit 0`.
