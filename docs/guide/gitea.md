@@ -3,6 +3,10 @@
 OpsCrew supports repositories hosted on [Gitea](https://about.gitea.com/) — both `gitea.com` and
 self-hosted Gitea instances — through the same plan-and-approval safety model as GitHub.
 
+> Want OpsCrew to **provision** a hardened self-hosted Gitea on your server and connect your app
+> with an API token and webhooks? See
+> [Self-hosted Gitea: provisioning and app integration](gitea-self-hosted.md).
+
 ## Prerequisites
 
 - **Gitea version:** Gitea **1.21+** for Actions secrets and variables, and **1.23+** for

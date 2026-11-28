@@ -107,6 +107,7 @@ import {
   renderDnsUpdaterScript,
 } from "./dns-updater";
 import type { AppRecord } from "./facts";
+import { giteaStepScripts } from "./gitea";
 import { GrantParamsSchema, grantEngine, MONITOR_LOGIN } from "./grant";
 import {
   DOCKER_POOLS,
@@ -4989,6 +4990,7 @@ const LOGIN_STEPS: ReadonlySet<HostStepId> = new Set([
   "drills",
   "beszel",
   "alloy",
+  "gitea",
   "deploy-key",
   "app-dirs",
 ]);
@@ -5068,6 +5070,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
     case "beszel":
     case "alloy":
       return addonScripts(plan, step, id);
+    case "gitea":
+      return giteaStepScripts(step);
   }
 }
 

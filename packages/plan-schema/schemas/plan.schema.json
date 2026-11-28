@@ -2286,6 +2286,132 @@
       "required": ["version"],
       "additionalProperties": false
     },
+    "gitea": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?$"
+        },
+        "hostname": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+        },
+        "database": {
+          "default": "sqlite",
+          "type": "string",
+          "enum": ["sqlite", "postgres"]
+        },
+        "adminUser": {
+          "default": "gitea-admin",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+        },
+        "adminEmail": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "disableRegistration": {
+          "default": true,
+          "type": "boolean"
+        },
+        "ssh": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "port": {
+              "default": 2222,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "additionalProperties": false
+        },
+        "appIntegration": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "tokenScopes": {
+              "default": ["read:repository", "read:issue", "read:organization", "read:user"],
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "read:repository",
+                  "write:repository",
+                  "read:issue",
+                  "write:issue",
+                  "read:organization",
+                  "write:organization",
+                  "read:user",
+                  "write:user",
+                  "read:package",
+                  "write:package",
+                  "read:notification",
+                  "write:notification",
+                  "read:misc"
+                ]
+              }
+            },
+            "webhook": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^\\/\\S*$"
+                },
+                "allowedHosts": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "memoryMb": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "gitea": {
+              "default": 512,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "postgres": {
+              "default": 256,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["version", "hostname", "adminEmail"],
+      "additionalProperties": false
+    },
     "observability": {
       "type": "object",
       "properties": {

@@ -26,6 +26,25 @@ export {
   resolveEnvironmentPaths,
 } from "./environments";
 export * from "./facts";
+export {
+  GITEA_DEFAULT_SSH_PORT,
+  GITEA_DEFAULT_TOKEN_SCOPES,
+  GITEA_MEMORY_DEFAULTS,
+  GITEA_TOKEN_SCOPES,
+  type GiteaAppIntegration,
+  GiteaAppIntegrationSchema,
+  type GiteaDatabase,
+  GiteaDatabaseSchema,
+  GiteaSchema,
+  type GiteaSettings,
+  GiteaSshSchema,
+  type GiteaSshSettings,
+  type GiteaTokenScope,
+  GiteaTokenScopeSchema,
+  GiteaWebhookSchema,
+  type GiteaWebhookSettings,
+  giteaOf,
+} from "./gitea";
 export * from "./interview";
 export {
   ArtifactError,

@@ -95,6 +95,7 @@ describe("pins.ts", () => {
       linuxTools: "latest",
       beszel: "0.21.1",
       beszelAgent: "0.21.1",
+      gitea: "28.4.0-rootless",
       alloy: "v1.21.3",
       prometheus: "v3.15.1",
       loki: "3.7.9",
@@ -133,6 +134,7 @@ describe("pins.ts", () => {
     expect(parseImageRef(IMAGES.prometheus.ref).repo).toBe("prom/prometheus");
     expect(parseImageRef(IMAGES.loki.ref).repo).toBe("grafana/loki");
     expect(parseImageRef(IMAGES.grafana.ref).repo).toBe("grafana/grafana");
+    expect(parseImageRef(IMAGES.gitea.ref).repo).toBe("gitea/gitea");
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
         "alloy",
@@ -151,6 +153,7 @@ describe("pins.ts", () => {
         "dragonfly",
         "redis",
         "garage",
+        "gitea",
         "grafana",
         "kafka",
         "kamalProxy",

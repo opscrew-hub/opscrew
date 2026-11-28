@@ -260,6 +260,12 @@ export interface NginxSite {
    * `httpsPort`.
    */
   local?: { httpsPort: number } | undefined;
+  /**
+   * Optional upstream `host:port` override (for example `opscrew-gitea:3000`); when absent,
+   * proxies to the shared `kamal-proxy` upstream group. Uses a variable so Docker DNS resolves
+   * dynamically at request time without blocking nginx startup.
+   */
+  upstream?: string | undefined;
 }
 
 /** `hosts` split into those the site serves and those that redirect, and where they redirect. */
@@ -305,7 +311,12 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     "\tproxy_buffering off;",
     "\tproxy_request_buffering off;",
     "\tlocation / {",
-    `\t\tproxy_pass http://${NGINX_UPSTREAM};`,
+    ...(site.upstream === undefined
+      ? [`\t\tproxy_pass http://${NGINX_UPSTREAM};`]
+      : [
+          `\t\tset $opscrew_upstream http://${site.upstream};`,
+          "\t\tproxy_pass $opscrew_upstream;",
+        ]),
     "\t}",
     ...(site.additions === undefined
       ? []

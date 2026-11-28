@@ -120,6 +120,10 @@ export const IMAGES = {
   portainer: {
     ref: "portainer/portainer-ce:2.45.2@sha256:03f94a406496dc84d37b552795fc424ccad8d0d7200353b6a82915f6e8f73ab0",
   },
+  /** Official rootless Gitea image (multi-arch amd64 + arm64, read from Docker Hub 2026-11-28). */
+  gitea: {
+    ref: "gitea/gitea:28.4.0-rootless@sha256:15ab7fadb44981a2b781f40c712cad07066197f395100ea1c6326e14e5bb073a",
+  },
   /** The Dockerfile frontend named by the generated Dockerfile's `# syntax=` line. */
   dockerfileSyntax: {
     ref: "docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e",

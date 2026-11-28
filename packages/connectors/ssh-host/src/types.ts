@@ -52,6 +52,7 @@ export const HOST_STEP_IDS = [
   "monitoring",
   "beszel",
   "alloy",
+  "gitea",
   "grant",
 ] as const;
 
@@ -709,6 +710,21 @@ export interface ApplySecrets {
    * root-only key file.
    */
   uptimeReportKey?: string;
+  /**
+   * Self-hosted Gitea's secret env file (`gitea.env`, `NAME=value` lines: `GITEA__security__SECRET_KEY`,
+   * `GITEA__security__INTERNAL_TOKEN`, JWT secrets, optional DB password). Sent base64-encoded on stdin.
+   */
+  giteaEnv?: string;
+  /**
+   * Self-hosted Gitea's dedicated PostgreSQL env file (`postgres.env`, `NAME=value` lines).
+   * Sent base64-encoded on stdin when `database: "postgres"`.
+   */
+  giteaPostgresEnv?: string;
+  /**
+   * One-shot bootstrap env (`GITEA_ADMIN_PASSWORD=...`) passed on stdin during Gitea admin creation
+   * and deleted immediately via shell trap.
+   */
+  giteaBootstrapEnv?: string;
 }
 
 export type SecretName = keyof ApplySecrets;

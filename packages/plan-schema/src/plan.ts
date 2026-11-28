@@ -41,6 +41,7 @@ import {
   VpsProviderSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
+import { GiteaSchema, giteaOf } from "./gitea";
 import { checkHome } from "./home";
 import { MigrationsSchema } from "./migrations";
 import { isOutsideMember, monitoringOf } from "./monitoring";
@@ -968,6 +969,58 @@ export const ObservabilitySchema = z.strictObject({
   grafanaCloud: GrafanaCloudSchema.optional(),
   monitoring: MonitoringSchema.optional(),
 });
+
+/**
+ * Self-hosted Gitea's cross-field rules: only on a server OpsCrew deploys to (not serverless,
+ * hosting, Portainer, or localhost), never in a preview environment, with a hostname distinct from
+ * the app's domain and other add-on subdomains, and covered by Cloudflare's edge certificate when
+ * served behind Cloudflare's proxy.
+ */
+function checkGitea(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const gitea = giteaOf(plan);
+  if (gitea === undefined) return;
+  const issue = (path: string[], message: string) =>
+    ctx.addIssue({ code: "custom", path: ["gitea", ...path], message });
+  if (!onOneServer(plan.target.provider)) {
+    issue(
+      ["enabled"],
+      "can be true only on a server: self-hosted Gitea runs on a cloud server or your own server; set gitea.enabled to false or choose a server target",
+    );
+    return;
+  }
+  if (plan.environment?.previews !== undefined) {
+    issue(
+      ["enabled"],
+      "must be false with previews: self-hosted Gitea runs on a persistent server, not a preview environment; set gitea.enabled to false",
+    );
+    return;
+  }
+  const { dns } = plan;
+  if (
+    dns.domain !== undefined &&
+    (gitea.hostname === dns.domain || gitea.hostname === `www.${dns.domain}`)
+  ) {
+    issue(["hostname"], `must differ from the app's domain (${dns.domain}) and its www. alias`);
+  }
+  for (const { field, hostname } of subdomains(plan)) {
+    if (hostname !== undefined && gitea.hostname === hostname) {
+      issue(["hostname"], `must differ from ${field}.hostname (${hostname})`);
+    }
+  }
+  if (dns.provider === "cloudflare" && dns.zone !== undefined) {
+    if (gitea.hostname !== dns.zone && !gitea.hostname.endsWith(`.${dns.zone}`)) {
+      issue(["hostname"], `must be inside ${dns.zone}, the app's Cloudflare zone`);
+    } else if (dns.proxied) {
+      const deep = cloudflareEdgeCoverage(gitea.hostname, dns.zone);
+      if (deep !== undefined) {
+        issue(
+          ["hostname"],
+          `must be one level below ${dns.zone}: ${deep.reason}; use a name such as ${deep.suggestion}`,
+        );
+      }
+    }
+  }
+}
 
 /**
  * The add-ons and the check where the target allows them: Beszel and Grafana Cloud run on a cloud
@@ -2467,6 +2520,8 @@ const DeployPlanFieldsSchema = z.strictObject({
     .prefault({}),
   /** Portainer CE on the server; absent means off. */
   portainer: PortainerSchema.optional(),
+  /** Self-hosted Gitea on the server; absent means off (feature 043 follow-up, issue #70). */
+  gitea: GiteaSchema.optional(),
   /** The scheduled check and the Beszel and Grafana Cloud add-ons; absent (or a part absent) is off. */
   observability: ObservabilitySchema.optional(),
   /**
@@ -2582,6 +2637,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     checkPreviews(environment, environment.previews, plan, ctx);
   }
   checkSubdomains(plan, ctx);
+  checkGitea(plan, ctx);
   checkObservability(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
   checkComponents(plan, ctx);

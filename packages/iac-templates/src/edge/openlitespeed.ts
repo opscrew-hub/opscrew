@@ -441,8 +441,12 @@ function rewriteRules(site: OpenLiteSpeedSite, how: Serving): string[] {
  *
  * `redirects` (`www`) go to the domain with 308.
  */
-export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, string[]> {
+export function openlitespeedSite(
+  site: OpenLiteSpeedSite & { upstream?: { name: string; address: string } | undefined },
+): Record<string, string[]> {
   const { app } = site;
+  const upstreamName = site.upstream?.name ?? OPENLITESPEED_UPSTREAM;
+  const upstreamAddress = site.upstream?.address ?? "kamal-proxy:80";
   const how = serving(site);
   const headers = [
     ...(how.hsts ? [`Header set Strict-Transport-Security "${HSTS}"`] : []),
@@ -456,10 +460,10 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
     set("enableGzip", 0).trim(),
     "",
     ...ERROR_PAGES,
-    "# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.",
-    ...block(`extprocessor ${OPENLITESPEED_UPSTREAM}`, [
+    `# ${upstreamName}, whose address OpenLiteSpeed looks up when it loads its configuration.`,
+    ...block(`extprocessor ${upstreamName}`, [
       set("type", "proxy"),
-      set("address", "kamal-proxy:80"),
+      set("address", upstreamAddress),
       set("maxConns", 1000),
       set("pcKeepAliveTimeout", 60),
       set("initTimeout", 60),
@@ -468,7 +472,7 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
     ]),
     ...block("context /", [
       set("type", "proxy"),
-      set("handler", OPENLITESPEED_UPSTREAM),
+      set("handler", upstreamName),
       set("addDefaultCharset", "off"),
       ...heredoc("extraHeaders", headers),
     ]),
@@ -483,7 +487,7 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
         ]
       : []),
     "# WebSockets: an Upgrade request reaches the app as one.",
-    ...block("websocket /", [set("address", "kamal-proxy:80")]),
+    ...block("websocket /", [set("address", upstreamAddress)]),
     ...rewrite(rewriteRules(site, how)),
     ...(how.tls.length > 0 ? block("vhssl", [...how.tls, ...TLS_LINES]) : []),
     "# Off: an answer is kept only when the app asks for it (X-LiteSpeed-Cache-Control).",

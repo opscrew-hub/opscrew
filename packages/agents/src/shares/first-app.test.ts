@@ -209,5 +209,16 @@ describe("hostDescription", () => {
       },
     });
     expect(hostDescription(beszel).hostnames).toEqual(["beszel.example.com", "shop.example.com"]);
+    const withGitea = DeployPlanSchema.parse({
+      ...base,
+      portainer: undefined,
+      gitea: {
+        enabled: true,
+        version: "28.4.0",
+        hostname: "git.example.com",
+        adminEmail: "ops@example.com",
+      },
+    });
+    expect(hostDescription(withGitea).hostnames).toEqual(["git.example.com", "shop.example.com"]);
   });
 });

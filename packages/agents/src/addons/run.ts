@@ -22,6 +22,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { type GiteaServices, giteaDisable, giteaEnable } from "../gitea";
 import { monitoringDisable } from "../monitoring/disable";
 import {
   enableFlags,
@@ -92,6 +93,8 @@ export interface AddonServices extends TunnelledChangeServices {
   ask?: (question: AddonQuestion) => Promise<string>;
   /** Self-hosted monitoring's reads and prices. */
   monitoring?: MonitoringServices;
+  /** Self-hosted Gitea remote shell collaborator (tests). */
+  gitea?: GiteaServices;
 }
 
 /** Options every add-on command takes (`--plan-only`, `--approve`, `--host-key`, `--engine`). */
@@ -123,11 +126,23 @@ export interface AddonEnableOptions extends AddonRunOptions, BeszelRequest {
    * that runs there, and approves nothing.
    */
   skipOtherAppsCheck?: boolean;
+  /** Self-hosted Gitea: initial administrator email address. */
+  adminEmail?: string;
+  /** Self-hosted Gitea: initial administrator username (default `gitea-admin`). */
+  adminUser?: string;
+  /** Self-hosted Gitea: backing database (`sqlite` or `postgres`). */
+  database?: "sqlite" | "postgres";
+  /** Self-hosted Gitea: app webhook endpoint path (e.g. `/api/webhooks/gitea`). */
+  webhookPath?: string;
+  /** Self-hosted Gitea: enable built-in Git-over-SSH server. */
+  sshEnabled?: boolean;
+  /** Self-hosted Gitea: external Git SSH port when enabled (default 2222). */
+  sshPort?: number;
 }
 
 /** `opscrew addon disable`. */
 export interface AddonDisableOptions extends AddonRunOptions {
-  /** Beszel: keep its history (the dashboard's data) on the server; no typed name needed then. */
+  /** Beszel/Gitea: keep data on the server (`false` on Gitea deletes volumes with confirmation). */
   keepData?: boolean;
 }
 
@@ -867,11 +882,45 @@ function grafanaCheck(plan: DeployPlan, reading: ServerReading): string[] {
 export async function addonEnable(
   deps: PhaseDeps,
   plan: DeployPlan,
-  kind: AddonKind | "monitoring",
+  kind: AddonKind | "monitoring" | "gitea",
   options: AddonEnableOptions = {},
 ): Promise<AddonResult> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const command = `opscrew addon enable ${kind}${flag}`;
+  if (kind === "gitea") {
+    const res = await giteaEnable(deps, plan, {
+      ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
+      ...(options.adminEmail === undefined ? {} : { adminEmail: options.adminEmail }),
+      ...(options.adminUser === undefined ? {} : { adminUser: options.adminUser }),
+      ...(options.database === undefined ? {} : { database: options.database }),
+      ...(options.webhookPath === undefined ? {} : { webhookPath: options.webhookPath }),
+      ...(options.sshEnabled === undefined ? {} : { sshEnabled: options.sshEnabled }),
+      ...(options.sshPort === undefined ? {} : { sshPort: options.sshPort }),
+      ...(options.planOnly === undefined ? {} : { planOnly: options.planOnly }),
+      ...(options.skipOtherAppsCheck === undefined
+        ? {}
+        : { skipOtherAppsCheck: options.skipOtherAppsCheck }),
+      ...(options.services?.gitea === undefined && options.services?.otherApps === undefined
+        ? {}
+        : {
+            services: {
+              ...options.services?.gitea,
+              ...(options.services?.otherApps === undefined
+                ? {}
+                : { otherApps: options.services.otherApps }),
+            },
+          }),
+    });
+    const status = await addonStatusOf(deps, plan);
+    return {
+      applied: false,
+      hostPlanHashes: [res.hostPlanHash],
+      hostApplied: res.hostApplied,
+      files: res.files,
+      status: { ...status, gitea: res.status },
+      approveCommand: res.approveCommand,
+    };
+  }
   if (plan.environment?.previews !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -956,10 +1005,35 @@ export async function addonEnable(
 export async function addonDisable(
   deps: PhaseDeps,
   plan: DeployPlan,
-  kind: AddonKind | "monitoring",
+  kind: AddonKind | "monitoring" | "gitea",
   options: AddonDisableOptions = {},
 ): Promise<AddonResult> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  if (kind === "gitea") {
+    const res = await giteaDisable(deps, plan, {
+      ...(options.keepData === undefined ? {} : { keepData: options.keepData }),
+      ...(options.planOnly === undefined ? {} : { planOnly: options.planOnly }),
+      ...(options.services?.gitea === undefined && options.services?.otherApps === undefined
+        ? {}
+        : {
+            services: {
+              ...options.services?.gitea,
+              ...(options.services?.otherApps === undefined
+                ? {}
+                : { otherApps: options.services.otherApps }),
+            },
+          }),
+    });
+    const status = await addonStatusOf(deps, plan);
+    return {
+      applied: false,
+      hostPlanHashes: [res.hostPlanHash],
+      hostApplied: res.hostApplied,
+      files: res.files,
+      status: { ...status, gitea: res.status },
+      approveCommand: res.approveCommand,
+    };
+  }
   if (kind === "monitoring") {
     return monitoringResult(
       deps,

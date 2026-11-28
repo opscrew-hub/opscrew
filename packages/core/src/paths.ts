@@ -35,6 +35,8 @@ export interface ProjectFiles {
   checkKey: string;
   /** Beszel's dashboard password and agent token (`beszel_secrets.json`), private. */
   beszelSecrets: string;
+  /** Self-hosted Gitea secrets (`gitea_secrets.json`: admin password, internal tokens, app API token, webhook secret), private. */
+  giteaSecrets: string;
   /** The Grafana Cloud access token (`grafana_cloud_token`), private. */
   grafanaCloudToken: string;
   /**
@@ -240,6 +242,7 @@ export function resolveProjectPaths(
       deploySecrets: path.join(projectHomeDir, "deploy_secrets.json"),
       checkKey: path.join(projectHomeDir, "check_key"),
       beszelSecrets: path.join(projectHomeDir, "beszel_secrets.json"),
+      giteaSecrets: path.join(projectHomeDir, "gitea_secrets.json"),
       grafanaCloudToken: path.join(projectHomeDir, "grafana_cloud_token"),
       previewKey: path.join(projectHomeDir, "preview_key"),
       previewKeyPub: path.join(projectHomeDir, "preview_key.pub"),

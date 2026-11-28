@@ -26,6 +26,7 @@ import {
   rotateRecoveryKey,
 } from "./copy";
 import { isCopyPath, localPath, readLocalFiles } from "./files";
+import { restoreRecoveryCopy } from "./restore";
 import { readRecord, SOPS_CONFIG_PATH, setRecoveryFolder, writeRecord } from "./store";
 
 const PLAN = { app: { name: "shop" } } as const;
@@ -84,6 +85,8 @@ describe("the copy's files", () => {
       "home/portainer_password": "FAKE-portainer-password\n",
       "home/check_key": "FAKE-check-key\n",
       "home/beszel_secrets.json": '{"password":"FAKE-beszel-password"}\n',
+      "home/gitea_secrets.json":
+        '{"secretKey":"0000000000000000000000000000000000000000000000000000000000000000"}\n',
       "home/grafana_cloud_token": "FAKE-grafana-cloud-token\n",
       "state/tfstate/storage.tfstate": '{"version":4}\n',
       "state/cloudflare.json": "{}\n",
@@ -102,12 +105,13 @@ describe("the copy's files", () => {
     expect(Object.keys(files).sort()).toEqual(Object.keys(every).sort());
     expect(files["state/tfstate/prod.tfstate"]).toBe(every["state/tfstate/prod.tfstate"]);
     // The check's key and the add-ons' secrets are copied from where OpsCrew keeps them.
-    const { checkKey, beszelSecrets, grafanaCloudToken } = deps.paths.files;
+    const { checkKey, beszelSecrets, giteaSecrets, grafanaCloudToken } = deps.paths.files;
     expect([
       localPath(deps.paths, "home/check_key"),
       localPath(deps.paths, "home/beszel_secrets.json"),
+      localPath(deps.paths, "home/gitea_secrets.json"),
       localPath(deps.paths, "home/grafana_cloud_token"),
-    ]).toEqual([checkKey, beszelSecrets, grafanaCloudToken]);
+    ]).toEqual([checkKey, beszelSecrets, giteaSecrets, grafanaCloudToken]);
 
     await rm(join(deps.paths.projectHomeDir, "known_hosts"));
     expect(Object.keys(await readLocalFiles(deps.paths, deps.redactor))).not.toContain(
@@ -121,6 +125,7 @@ describe("the copy's files", () => {
       "home/portainer_password",
       "home/check_key",
       "home/beszel_secrets.json",
+      "home/gitea_secrets.json",
       "home/grafana_cloud_token",
       "state/server.json",
       "state/cloudflare.json",
@@ -143,6 +148,38 @@ describe("the copy's files", () => {
       "opscrew/plan.yaml",
     ]) {
       expect(isCopyPath(path)).toBe(false);
+    }
+  });
+
+  it("backs up and restores home/gitea_secrets.json at mode 0600 and registers its secrets with the redactor", async () => {
+    const { deps, sops, identity, root } = await withFirstCopy();
+    const giteaPayload = JSON.stringify({
+      adminPassword: "FAKE-gitea-admin-password-00000001",
+      secretKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      webhookSecret: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      appApiToken: "FAKE-gitea-bot-token-000000000001",
+    });
+    await writeLocal(deps, { "home/gitea_secrets.json": `${giteaPayload}\n` });
+
+    const refreshed = changed(
+      await refreshRecoveryCopy(deps, PLAN, { repositoryPrivate: async () => true }),
+    );
+    await writeRepositoryFiles(root, refreshed.repositoryFiles);
+    expect(encrypted(sops, 1)["home/gitea_secrets.json"]).toBe(`${giteaPayload}\n`);
+    expect(deps.redactor.redact("FAKE-gitea-admin-password-00000001")).not.toContain(
+      "FAKE-gitea-admin-password-00000001",
+    );
+    expect(deps.redactor.redact("FAKE-gitea-bot-token-000000000001")).not.toContain(
+      "FAKE-gitea-bot-token-000000000001",
+    );
+
+    // Simulate a fresh machine: remove local gitea_secrets.json and restore from encrypted copy.
+    await rm(deps.paths.files.giteaSecrets);
+    const restored = await restoreRecoveryCopy(deps, { identity });
+    expect(restored.restored).toContain("home/gitea_secrets.json");
+    expect(await readFile(deps.paths.files.giteaSecrets, "utf8")).toBe(`${giteaPayload}\n`);
+    if (POSIX) {
+      expect((await stat(deps.paths.files.giteaSecrets)).mode & 0o777).toBe(0o600);
     }
   });
 });

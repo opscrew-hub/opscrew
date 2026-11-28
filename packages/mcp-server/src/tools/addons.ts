@@ -8,6 +8,7 @@ import {
   addonEnable,
   addonStatus,
   describeAddonStatus,
+  describeGiteaStatus,
   describeMonitoringStatus,
   type PhaseDeps,
 } from "@opscrew/agents";
@@ -34,10 +35,11 @@ export interface AddonToolOptions {
   services?: AddonServices;
 }
 
-type AddonKind = keyof typeof ADDON_NAMES | "monitoring";
+type AddonKind = keyof typeof ADDON_NAMES | "monitoring" | "gitea";
 
 const KINDS: [AddonKind, ...AddonKind[]] = [
   "monitoring",
+  "gitea",
   ...(Object.keys(ADDON_NAMES) as AddonKind[]),
 ];
 
@@ -76,6 +78,7 @@ function statusText(status: AddonStatus, app: string, now: Date): string {
   return [
     ...status.addons.map((state) => describeAddonStatus(state, app)),
     ...(status.monitoring === undefined ? [] : [describeMonitoringStatus(status.monitoring, now)]),
+    ...(status.gitea === undefined ? [] : [describeGiteaStatus(status.gitea)]),
     [SECRETS_NOTE, ...(status.monitoring === undefined ? [] : [MONITORING_NOTE])].join(" "),
   ].join("\n\n");
 }
@@ -259,6 +262,9 @@ export function registerAddonTools(
           .int()
           .optional()
           .describe("Monitoring: days logs are kept (default 7)."),
+        adminEmail: z.string().optional().describe("Gitea: initial admin email."),
+        database: z.enum(["sqlite", "postgres"]).optional().describe("Gitea: sqlite or postgres."),
+        webhookPath: z.string().optional().describe("Gitea: app webhook path."),
         ...skipOtherAppsCheckInput,
       },
       annotations: IDEMPOTENT_WRITE,
@@ -283,7 +289,9 @@ export function registerAddonTools(
         const { phase, plan, terminal } = await planOf(call, app, environment, {
           approvalHandler: handler,
         });
-        await requireToken(phase, addon, request.mode, terminal);
+        if (addon !== "gitea") {
+          await requireToken(phase, addon, request.mode, terminal);
+        }
         const result = await addonEnable(phase, plan, addon, { ...given, ...services });
         return {
           text: changeText(result, plan, phase.clock.now()),
@@ -322,8 +330,9 @@ export function registerAddonTools(
         const { phase, plan, terminal } = await planOf(call, app, environment, {
           approvalHandler: handler,
         });
-        // Beszel's hub keeps its history here; its agent mode keeps none.
-        const keepData = addon === "beszel" && plan.observability?.beszel?.mode !== "agent";
+        // Beszel's hub and self-hosted Gitea keep their data here; deleting data is terminal-only.
+        const keepData =
+          addon === "gitea" || (addon === "beszel" && plan.observability?.beszel?.mode !== "agent");
         const result = await addonDisable(phase, plan, addon, {
           ...(keepData ? { keepData: true } : {}),
           ...services,
@@ -331,7 +340,9 @@ export function registerAddonTools(
         const kept = keepData
           ? [
               "",
-              `Beszel's history stays on the server. Deleting it needs the app's name typed by the user: ask them to run \`npx opscrew addon disable beszel${terminal}\` in a terminal.`,
+              addon === "gitea"
+                ? `Self-hosted Gitea data volumes stay on the server. Deleting them needs the app's name typed by the user: ask them to run \`npx opscrew addon disable gitea --delete-data${terminal}\` in a terminal.`
+                : `Beszel's history stays on the server. Deleting it needs the app's name typed by the user: ask them to run \`npx opscrew addon disable beszel${terminal}\` in a terminal.`,
             ]
           : [];
         return {

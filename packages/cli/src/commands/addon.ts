@@ -41,10 +41,10 @@ import {
   YES_DESCRIPTION,
 } from "./provision";
 
-/** An add-on: `beszel`, `grafana-cloud` or `monitoring` (self-hosted). */
-type AddonKind = keyof typeof ADDON_NAMES | "monitoring";
+/** An add-on: `beszel`, `grafana-cloud`, `monitoring`, or `gitea` (self-hosted). */
+type AddonKind = keyof typeof ADDON_NAMES | "monitoring" | "gitea";
 
-const KINDS: AddonKind[] = [...(Object.keys(ADDON_NAMES) as AddonKind[]), "monitoring"];
+const KINDS: AddonKind[] = [...(Object.keys(ADDON_NAMES) as AddonKind[]), "monitoring", "gitea"];
 
 interface ChangeFlags extends AppEnvFlags {
   planOnly?: boolean;
@@ -72,17 +72,28 @@ interface EnableFlags extends ChangeFlags {
   logsDays?: string;
   /** Beszel, `--skip-other-apps-check`: go on without the look for other apps on the server. */
   skipOtherAppsCheck?: boolean;
+  /** Self-hosted Gitea options. */
+  adminEmail?: string;
+  adminUser?: string;
+  database?: "sqlite" | "postgres";
+  webhookPath?: string;
+  ssh?: boolean;
+  sshPort?: number;
 }
 
 interface DisableFlags extends ChangeFlags {
   keepData?: boolean;
-  /** The app's name, to approve deleting Beszel's history without a prompt (scripts). */
+  /** Gitea: permanently delete Docker data volumes (requires typed app name confirmation). */
+  deleteData?: boolean;
+  /** The app's name, to approve deleting Beszel's history or Gitea's data without a prompt (scripts). */
   confirm?: string;
 }
 
-/** The `<beszel|grafana-cloud|monitoring>` argument. */
+/** The `<beszel|grafana-cloud|monitoring|gitea>` argument. */
 function kindArgument(): Argument {
-  return new Argument("<addon>", "The add-on: beszel, grafana-cloud or monitoring").choices(KINDS);
+  return new Argument("<addon>", "The add-on: beszel, grafana-cloud, monitoring or gitea").choices(
+    KINDS,
+  );
 }
 
 /** Commander parser of `--port <local>`: a TCP port, 1 to 65535. */
@@ -192,12 +203,16 @@ async function runChange(
       );
       requireServer(plan, `\`opscrew addon ${sub} ${kind}\``, ON_HOSTING_INSTEAD.addons);
       const app = plan.app.name;
+      const giteaResource = plan.gitea?.hostname ?? "opscrew-gitea";
+      const confirmTarget = kind === "gitea" ? giteaResource : app;
       const confirm = flags.confirm?.trim();
       checkConfirmName(
         confirm,
-        app,
-        "the app's name",
-        `To delete Beszel's history in a script, run \`opscrew addon disable beszel${flag} --approve <hash> … --confirm ${app}\`.`,
+        confirmTarget,
+        kind === "gitea" ? "Gitea's hostname" : "the app's name",
+        kind === "gitea"
+          ? `To delete Gitea's data in a script, run \`opscrew addon disable gitea${flag} --delete-data --approve <hash> --confirm ${giteaResource}\`.`
+          : `To delete Beszel's history in a script, run \`opscrew addon disable beszel${flag} --approve <hash> … --confirm ${app}\`.`,
       );
       const deps = createPhaseDeps(ctx, {
         ai: false,
@@ -209,7 +224,10 @@ async function runChange(
               wrapApprovals: (base, clock) =>
                 new FlagConfirmation(base, {
                   kinds: ["host-apply"],
-                  what: "deleting Beszel's history",
+                  what:
+                    kind === "gitea"
+                      ? "deleting self-hosted Gitea's repositories and database"
+                      : "deleting Beszel's history",
                   names: confirm === undefined ? [] : [confirm],
                   hashes,
                   interactive: ctx.isInteractive,
@@ -345,6 +363,21 @@ export function register(program: Command, ctx: CliContext): void {
       )
       .option("--metrics-days <n>", "Monitoring: the days figures are kept, 1 to 90 (default 15)")
       .option("--logs-days <n>", "Monitoring: the days logs are kept, 1 to 30 (default 7)")
+      .option("--admin-email <email>", "Gitea: initial administrator email address")
+      .option("--admin-user <user>", "Gitea: initial administrator username (default gitea-admin)")
+      .addOption(
+        new Option("--database <engine>", "Gitea: backing database (sqlite or postgres)").choices([
+          "sqlite",
+          "postgres",
+        ]),
+      )
+      .option("--webhook-path <path>", "Gitea: app webhook path (for example /api/webhooks/gitea)")
+      .option("--ssh", "Gitea: enable built-in Git-over-SSH server (disabled by default)")
+      .option(
+        "--ssh-port <port>",
+        "Gitea: external Git SSH port when --ssh is set (default 2222)",
+        parsePort,
+      )
       .addOption(skipOtherAppsOption("Beszel")),
   ).action((kind: AddonKind, flags: EnableFlags) =>
     runChange(ctx, "enable", kind, flags, (deps, plan, options) =>
@@ -366,6 +399,12 @@ export function register(program: Command, ctx: CliContext): void {
         ...(flags.metricsDays === undefined ? {} : { metricsDays: Number(flags.metricsDays) }),
         ...(flags.logsDays === undefined ? {} : { logsDays: Number(flags.logsDays) }),
         ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
+        ...(flags.adminEmail === undefined ? {} : { adminEmail: flags.adminEmail }),
+        ...(flags.adminUser === undefined ? {} : { adminUser: flags.adminUser }),
+        ...(flags.database === undefined ? {} : { database: flags.database }),
+        ...(flags.webhookPath === undefined ? {} : { webhookPath: flags.webhookPath }),
+        ...(flags.ssh === true ? { sshEnabled: true } : {}),
+        ...(flags.sshPort === undefined ? {} : { sshPort: flags.sshPort }),
       }),
     ),
   );
@@ -374,19 +413,27 @@ export function register(program: Command, ctx: CliContext): void {
     addon
       .command("disable")
       .description(
-        "Remove Beszel or Grafana Alloy from the app's server, with its data (Beszel's history stays with --keep-data), or take self-hosted monitoring out of the plan for `opscrew provision` to remove",
+        "Remove Beszel, Grafana Alloy, self-hosted Gitea or self-hosted monitoring from the app's server",
       )
       .addArgument(kindArgument())
-      .option("--keep-data", "Beszel: keep its history (the dashboard's data) on the server")
+      .option("--keep-data", "Beszel/Gitea: keep data volumes on the server")
+      .option(
+        "--delete-data",
+        "Gitea: permanently delete repositories and database volumes (requires --confirm <app>)",
+      )
       .option(
         "--confirm <name>",
-        "The app's name, to delete Beszel's history without a prompt (for scripts; with --approve and the host plan's hash)",
+        "The app's name, to approve deleting Beszel's history or Gitea's data without a prompt (for scripts; with --approve and the host plan's hash)",
       ),
   ).action((kind: AddonKind, flags: DisableFlags) =>
     runChange(ctx, "disable", kind, flags, (deps, plan, options) =>
       addonDisable(deps, plan, kind, {
         ...options,
-        ...(flags.keepData === true ? { keepData: true } : {}),
+        ...(kind === "gitea"
+          ? { keepData: flags.deleteData !== true }
+          : flags.keepData === true
+            ? { keepData: true }
+            : {}),
       }),
     ),
   );

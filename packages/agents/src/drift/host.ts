@@ -141,6 +141,7 @@ export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   beszel: "Beszel",
   alloy: "Grafana Alloy",
   monitoring: "OpsCrew's monitoring stack",
+  gitea: "Self-hosted Gitea",
   previews: "The preview recipe, its key and its cleanup",
 };
 
@@ -837,6 +838,7 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     case "beszel":
     case "alloy":
     case "monitoring":
+    case "gitea":
     case "previews":
       return [];
   }

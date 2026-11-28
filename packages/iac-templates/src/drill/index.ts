@@ -8,6 +8,7 @@
  */
 import {
   type DeployPlan,
+  giteaOf,
   isHostingTarget,
   isServerlessTarget,
   poolerName,
@@ -127,9 +128,12 @@ export function drillProject(plan: DeployPlan, id: string): RestoreProject {
 export function drillPlan(plan: DeployPlan, snapshot: DrillSnapshot): DeployPlan {
   const services = plan.services.filter((s) => s.enabled && snapshot.parts.includes(s.name));
   const { sqlite, files } = plan.storage ?? {};
+  const gitea = giteaOf(plan);
   const volumes = [
     ...(sqlite === undefined ? [] : ["sqlite"]),
     ...(files === undefined ? [] : ["files"]),
+    ...(gitea === undefined ? [] : ["gitea"]),
+    ...(gitea?.database === "postgres" ? ["gitea-db"] : []),
   ];
   for (const part of snapshot.parts) {
     if (!services.some((s) => s.name === part) && !volumes.includes(part)) {

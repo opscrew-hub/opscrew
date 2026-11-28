@@ -21,6 +21,7 @@ import {
   APP_SERVER,
   backupsBucketOf,
   type DeployPlan,
+  giteaOf,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { planUptimeTeardown } from "../check/uptime";
@@ -426,6 +427,13 @@ function dataLoss(plan: DeployPlan, facts: HostFacts): string {
     sharesOf(plan) === undefined
   ) {
     lost.push("Portainer's data");
+  }
+  if (
+    giteaOf(plan) !== undefined &&
+    otherApps(plan, facts).length === 0 &&
+    sharesOf(plan) === undefined
+  ) {
+    lost.push(`self-hosted Gitea's repositories and database (${giteaOf(plan)?.hostname})`);
   }
   const undone =
     snapshots === undefined

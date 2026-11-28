@@ -3,6 +3,7 @@ import {
   APP_SERVER,
   DATABASE_KINDS,
   type DeployPlan,
+  giteaOf,
   ONLINE_SNAPSHOT_KINDS,
   postgresLogins,
   REDIS_PROTOCOL_KINDS,
@@ -13,6 +14,7 @@ import {
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceImageRef, serviceSpec } from "../catalog";
 import { loginsCheck, loginsLoad } from "../catalog/postgres-logins";
+import { GITEA_PROJECT, GITEA_VOLUMES } from "../gitea";
 import { IMAGES } from "../pins";
 import { FILES_VOLUME, SQLITE_VOLUME } from "../runtime";
 import { shellQuote } from "../runtime/services";
@@ -75,11 +77,11 @@ export const SNAPSHOT_SCRIPT = "snapshot.sh";
  */
 export const SNAPSHOT_FUNCTIONS = `OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./${SNAPSHOT_SCRIPT}`;
 
-/** One part of a snapshot: a service that keeps data, the app's SQLite volume or its kept folder. */
+/** One part of a snapshot: a service that keeps data, the app's SQLite/kept volumes, or self-hosted Gitea. */
 export interface SnapshotPart {
-  /** The service's name; `sqlite` for the app's SQLite volume, `files` for its kept folder's. */
+  /** The service's name; `sqlite`/`files` for app volumes, `gitea`/`gitea-db` for self-hosted Gitea. */
   name: string;
-  kind: SelfHostedServiceKind | "sqlite" | "files";
+  kind: SelfHostedServiceKind | "sqlite" | "files" | "gitea" | "gitea-db";
   /** Its file in the snapshot's folder (024 plan.md 1.). */
   file: string;
   /** Copied while it runs; otherwise stopped alone for its copy. */
@@ -140,6 +142,30 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
   });
   if (server !== APP_SERVER) return services;
   const { sqlite, files } = plan.storage ?? {};
+  const gitea = giteaOf(plan);
+  const giteaParts: SnapshotPart[] =
+    gitea === undefined
+      ? []
+      : [
+          {
+            name: "gitea",
+            kind: "gitea",
+            file: "gitea.tar",
+            online: false,
+            image: IMAGES.gitea.ref,
+          },
+          ...(gitea.database === "postgres"
+            ? [
+                {
+                  name: "gitea-db",
+                  kind: "gitea-db" as const,
+                  file: "gitea-db.dump",
+                  online: false,
+                  image: IMAGES.postgres.ref,
+                },
+              ]
+            : []),
+        ];
   return [
     ...services,
     ...(sqlite === undefined
@@ -148,6 +174,7 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
     ...(files === undefined
       ? []
       : [{ name: "files", kind: "files", file: "files.tar", online: true } as const]),
+    ...giteaParts,
   ];
 }
 
@@ -552,6 +579,20 @@ export function partRestore(part: SnapshotPart): PartRestore {
       put: (from) => `find /data -mindepth 1 -delete && tar -C /data -xpf ${from}`,
     };
   }
+  if (part.kind === "gitea") {
+    return {
+      stop: true,
+      put: (from) =>
+        `find /var/lib/gitea /etc/gitea -mindepth 1 -delete && tar -C / -xpf ${from} var/lib/gitea etc/gitea`,
+    };
+  }
+  if (part.kind === "gitea-db") {
+    return {
+      stop: true,
+      load: (file) =>
+        `umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h gitea-db -U gitea -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS gitea WITH (FORCE)" -c "CREATE DATABASE gitea OWNER gitea" && pg_restore -h gitea-db -U gitea -d gitea --no-owner --single-transaction ${file}`,
+    };
+  }
   const { name: service, kind } = part;
   if (databaseKind(kind)) {
     const { login } = DATABASES[kind];
@@ -650,6 +691,69 @@ function serverRestore(part: SnapshotPart, file: string, project?: RestoreProjec
       `docker run --rm -i --network none -v "$_volume":/data ${IMAGES.busybox.ref} sh -c ${shellQuote(put ?? "")} < ${file} >> ${log} 2>&1`,
     ];
   }
+  if (part.kind === "gitea") {
+    const dataVol =
+      project === undefined
+        ? `${GITEA_PROJECT}_${GITEA_VOLUMES.data}`
+        : `${project.name}_${GITEA_VOLUMES.data}`;
+    const configVol =
+      project === undefined
+        ? `${GITEA_PROJECT}_${GITEA_VOLUMES.config}`
+        : `${project.name}_${GITEA_VOLUMES.config}`;
+    const restoreBusybox = `docker run --rm -i --network none -v ${dataVol}:/var/lib/gitea -v ${configVol}:/etc/gitea ${IMAGES.busybox.ref} sh -c ${shellQuote(put ?? "")} < ${file} >> ${log} 2>&1`;
+    if (project !== undefined) {
+      // ADR 0034 restore drill: restore into throwaway volumes; in SQLite mode boot a throwaway
+      // --network none Gitea container and probe /api/healthz (Postgres mode boots both together in gitea-db).
+      const drillContainer = `${project.name}-gitea-drill`;
+      return [
+        `${restoreBusybox} || return 1`,
+        'if [ ! -f .snapshots/"$2"/gitea-db.dump ]; then',
+        `  _drill_rc=1`,
+        `  docker rm -f ${drillContainer} >/dev/null 2>&1 || true`,
+        `  docker run -d --name ${drillContainer} --network none -v ${dataVol}:/var/lib/gitea -v ${configVol}:/etc/gitea -e GITEA__security__INSTALL_LOCK=true -e GITEA__database__DB_TYPE=sqlite3 -e GITEA__database__PATH=/var/lib/gitea/data/gitea.db ${IMAGES.gitea.ref} >> ${log} 2>&1 &&`,
+        `  { _i=0; while [ "$_i" -lt 30 ]; do if docker exec ${drillContainer} wget -q -O /dev/null http://127.0.0.1:3000/api/healthz >> ${log} 2>&1; then _drill_rc=0; break; fi; _i=$((_i+1)); sleep 2; done; }`,
+        `  docker rm -f ${drillContainer} >/dev/null 2>&1 || true`,
+        `  [ "$_drill_rc" -eq 0 ] || return 1`,
+        "fi",
+      ];
+    }
+    return [
+      `docker compose -p ${GITEA_PROJECT} stop -t 120 gitea >> ${log} 2>&1 || return 1`,
+      `${restoreBusybox} || { docker compose -p ${GITEA_PROJECT} start gitea >> ${log} 2>&1; return 1; }`,
+      `docker compose -p ${GITEA_PROJECT} start gitea >> ${log} 2>&1`,
+    ];
+  }
+  if (part.kind === "gitea-db") {
+    if (project !== undefined) {
+      // ADR 0034 restore drill: boot a throwaway Postgres + pinned Gitea on an isolated --internal
+      // network (no outside access), load gitea-db.dump, probe Gitea's /api/healthz, then remove all.
+      const drillNet = `${project.name}-gitea-net`;
+      const drillDb = `${project.name}-gitea-db-drill`;
+      const drillApp = `${project.name}-gitea-drill`;
+      const dataVol = `${project.name}_${GITEA_VOLUMES.data}`;
+      const configVol = `${project.name}_${GITEA_VOLUMES.config}`;
+      return [
+        "_drill_rc=1",
+        "_drill_pw=\"$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n')\"",
+        `docker rm -f ${drillApp} ${drillDb} >/dev/null 2>&1 || true`,
+        `docker network rm ${drillNet} >/dev/null 2>&1 || true`,
+        `docker network create --internal ${drillNet} >> ${log} 2>&1 || return 1`,
+        `docker run -d --name ${drillDb} --network ${drillNet} --network-alias gitea-db -e POSTGRES_DB=gitea -e POSTGRES_USER=gitea -e POSTGRES_PASSWORD="$_drill_pw" ${IMAGES.postgres.ref} >> ${log} 2>&1 &&`,
+        `{ _i=0; while [ "$_i" -lt 30 ]; do if docker exec ${drillDb} pg_isready -U gitea -d gitea >/dev/null 2>&1; then break; fi; _i=$((_i+1)); sleep 1; done; } &&`,
+        `docker exec -i ${drillDb} pg_restore -U gitea -d gitea --no-owner --single-transaction < ${file} >> ${log} 2>&1 &&`,
+        `docker run -d --name ${drillApp} --network ${drillNet} -v ${dataVol}:/var/lib/gitea -v ${configVol}:/etc/gitea -e GITEA__security__INSTALL_LOCK=true -e GITEA__database__DB_TYPE=postgres -e GITEA__database__HOST=gitea-db:5432 -e GITEA__database__NAME=gitea -e GITEA__database__USER=gitea -e GITEA__database__PASSWD="$_drill_pw" ${IMAGES.gitea.ref} >> ${log} 2>&1 &&`,
+        `{ _i=0; while [ "$_i" -lt 30 ]; do if docker exec ${drillApp} wget -q -O /dev/null http://127.0.0.1:3000/api/healthz >> ${log} 2>&1; then _drill_rc=0; break; fi; _i=$((_i+1)); sleep 2; done; }`,
+        `docker rm -f ${drillApp} ${drillDb} >/dev/null 2>&1 || true`,
+        `docker network rm ${drillNet} >/dev/null 2>&1 || true`,
+        '[ "$_drill_rc" -eq 0 ] || return 1',
+      ];
+    }
+    return [
+      `docker compose -p ${GITEA_PROJECT} stop -t 120 gitea >> ${log} 2>&1 || return 1`,
+      `docker compose -p ${GITEA_PROJECT} exec -T gitea-db sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -U gitea -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS gitea WITH (FORCE)" -c "CREATE DATABASE gitea OWNER gitea" && pg_restore -U gitea -d gitea --no-owner --single-transaction' < ${file} >> ${log} 2>&1 || { docker compose -p ${GITEA_PROJECT} start gitea >> ${log} 2>&1; return 1; }`,
+      `docker compose -p ${GITEA_PROJECT} start gitea >> ${log} 2>&1`,
+    ];
+  }
   if (!part.online) return [`snapshot_untar ${service} "$2" ${shellQuote(put ?? "")}`];
   const more = (later: boolean) => (later ? " || return 1" : "");
   return [
@@ -704,6 +808,30 @@ function partCommands(part: SnapshotPart, project?: RestoreProject): PartCommand
       take: [
         "snapshot_files_volume || return 3",
         `docker run --rm --network none -v "$_volume":/data:ro ${IMAGES.busybox.ref} sh -c ${shellQuote(filesTar("/data"))} < /dev/null > ${file} 2>> ${SNAPSHOT_LOG}`,
+      ],
+      restore,
+    };
+  }
+  if (part.kind === "gitea") {
+    const dataVol = `${GITEA_PROJECT}_${GITEA_VOLUMES.data}`;
+    const configVol = `${GITEA_PROJECT}_${GITEA_VOLUMES.config}`;
+    return {
+      take: [
+        `docker volume inspect ${dataVol} >/dev/null 2>&1 || return 3`,
+        `docker compose -p ${GITEA_PROJECT} stop -t 120 gitea >> ${SNAPSHOT_LOG} 2>&1 || return 1`,
+        `docker run --rm --network none -v ${dataVol}:/var/lib/gitea:ro -v ${configVol}:/etc/gitea:ro ${IMAGES.busybox.ref} tar -C / -cf - var/lib/gitea etc/gitea < /dev/null > ${file} 2>> ${SNAPSHOT_LOG} || { docker compose -p ${GITEA_PROJECT} start gitea >> ${SNAPSHOT_LOG} 2>&1; return 1; }`,
+        `docker compose -p ${GITEA_PROJECT} start gitea >> ${SNAPSHOT_LOG} 2>&1`,
+      ],
+      restore,
+    };
+  }
+  if (part.kind === "gitea-db") {
+    return {
+      take: [
+        `[ -n "$(docker compose -p ${GITEA_PROJECT} ps -q gitea-db 2>/dev/null)" ] || return 3`,
+        `docker compose -p ${GITEA_PROJECT} stop -t 120 gitea >> ${SNAPSHOT_LOG} 2>&1 || return 1`,
+        `docker compose -p ${GITEA_PROJECT} exec -T gitea-db sh -c 'export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -U gitea -Fc gitea' < /dev/null > ${file} 2>> ${SNAPSHOT_LOG} || { docker compose -p ${GITEA_PROJECT} start gitea >> ${SNAPSHOT_LOG} 2>&1; return 1; }`,
+        `docker compose -p ${GITEA_PROJECT} start gitea >> ${SNAPSHOT_LOG} 2>&1`,
       ],
       restore,
     };

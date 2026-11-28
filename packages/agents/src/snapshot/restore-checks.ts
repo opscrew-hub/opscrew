@@ -69,7 +69,11 @@ export function partWords(part: Pick<SnapshotPart, "name" | "kind">): string {
       ? "the app's SQLite files"
       : part.kind === "files"
         ? "the app's kept folder"
-        : serviceSpec(part.kind).title;
+        : part.kind === "gitea"
+          ? "self-hosted Gitea data"
+          : part.kind === "gitea-db"
+            ? "self-hosted Gitea PostgreSQL"
+            : serviceSpec(part.kind).title;
   return `${part.name} (${kind})`;
 }
 

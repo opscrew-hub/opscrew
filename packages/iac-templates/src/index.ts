@@ -52,6 +52,7 @@ export {
   type VercelRoutingContext,
   type VercelRoutingTranslation,
 } from "./edge/vercel-routing";
+export * from "./gitea";
 export * from "./hosting";
 export * from "./infra";
 export { CAA_ISSUERS, DNS_STATE_RENAMES } from "./infra/cloudflare";

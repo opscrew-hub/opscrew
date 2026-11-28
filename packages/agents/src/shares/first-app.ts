@@ -161,11 +161,14 @@ export function hostDescription(plan: DeployPlan): {
   access: "web-filter" | "public";
   memoryMb: number;
 } {
-  const subdomains = [plan.portainer, plan.observability?.beszel].flatMap((addon) =>
-    addon?.enabled === true && addon.access === "subdomain" && addon.hostname !== undefined
-      ? [addon.hostname]
-      : [],
-  );
+  const subdomains = [
+    ...[plan.portainer, plan.observability?.beszel].flatMap((addon) =>
+      addon?.enabled === true && addon.access === "subdomain" && addon.hostname !== undefined
+        ? [addon.hostname]
+        : [],
+    ),
+    ...(plan.gitea?.enabled === true ? [plan.gitea.hostname] : []),
+  ];
   return {
     app: plan.app.name,
     hostnames: [...new Set([...siteHosts(plan), ...subdomains])].sort(),

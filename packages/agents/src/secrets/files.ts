@@ -40,6 +40,7 @@ const HOME_FILES = [
   "preview_key",
   "preview_key.pub",
   "beszel_secrets.json",
+  "gitea_secrets.json",
   "grafana_cloud_token",
   // The uptime Worker's report key (feature 046), which the entry's secret and the servers hold.
   "uptime_report_key",
@@ -130,10 +131,14 @@ function generatedLeaves(text: string | undefined): Map<string, string> {
   }
 }
 
+/** The copy's path of self-hosted Gitea's secrets, registered one by one with the redactor. */
+const GITEA_SECRETS = "home/gitea_secrets.json";
+
 /**
  * Registers every value inside `files`' generated values with the redactor, each by itself, and
  * each entry of an app's previous-value variable on its own too (`previousEntries`), under the
- * label provision gives them (`app-env`); and the app's recorded values (`registerNamedValues`).
+ * label provision gives them (`app-env`); and the app's recorded values (`registerNamedValues`);
+ * and self-hosted Gitea's secrets when present.
  */
 export function registerGeneratedValues(redactor: Redactor, files: Record<string, string>): void {
   const recorded = generatedLeaves(files[APP_VALUES]);
@@ -147,6 +152,9 @@ export function registerGeneratedValues(redactor: Redactor, files: Record<string
     for (const entry of previousEntries(name.slice("env.".length), value)) {
       redactor.addLiteral(entry, "app-env");
     }
+  }
+  for (const [, value] of generatedLeaves(files[GITEA_SECRETS])) {
+    redactor.addLiteral(value, "gitea-secret");
   }
 }
 

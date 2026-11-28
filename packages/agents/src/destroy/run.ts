@@ -2,7 +2,13 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, isCloudProvider, readArtifact } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  giteaOf,
+  isCloudProvider,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { planUptimeTeardown, type UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { destroyHosting } from "../hosting/destroy";
@@ -311,6 +317,11 @@ async function destroyInfrastructure(
         ...(ctx.earlierSnapshots ?? []),
         // The off-server copies outlive the server, wherever they are: OpsCrew never deletes them.
         ...(offsiteCopiesStay(plan) === "" ? [] : [offsiteCopiesStay(plan).trim()]),
+        ...(giteaOf(plan) === undefined
+          ? []
+          : [
+              `Self-hosted Gitea (${giteaOf(plan)?.hostname}) and all of its Git repositories and database on this server will also be permanently deleted.`,
+            ]),
         ...(tunnelChange(summary.changes, "delete") && !serverDeleted
           ? [
               "OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel (Cloudflare deletes a tunnel only after its connector has stopped).",

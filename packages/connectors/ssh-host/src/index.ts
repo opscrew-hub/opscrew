@@ -131,6 +131,17 @@ export {
   tunnelOf,
   type UptimeReportFacts,
 } from "./facts";
+export {
+  GITEA_HOST_PROJECT,
+  GITEA_PROXY_PARAM_PREFIX,
+  type GiteaDisablePlanInput,
+  type GiteaEdgeProxy,
+  type GiteaEnablePlanInput,
+  giteaHostDir,
+  giteaStepScripts,
+  type PlanGiteaOptions,
+  planGitea,
+} from "./gitea";
 export { type GrantParams, GrantParamsSchema, MONITOR_LOGIN } from "./grant";
 export { hostPlanHash } from "./hash";
 export {

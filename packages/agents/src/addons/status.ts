@@ -11,6 +11,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { describeGiteaStatus, type GiteaStatus, giteaStatusOf } from "../gitea";
 import {
   type MonitoringReading,
   monitoringReadingLines,
@@ -80,10 +81,11 @@ export interface MonitoringState {
   note?: string;
 }
 
-/** Both add-ons' states, and self-hosted monitoring's when it is on. */
+/** All add-ons' states, plus self-hosted monitoring and self-hosted Gitea when present. */
 export interface AddonStatus {
   addons: AddonState[];
   monitoring?: MonitoringState;
+  gitea?: GiteaStatus;
 }
 
 /** The add-ons' states from the plan and this computer only (nothing is contacted). */
@@ -129,7 +131,9 @@ export async function addonStatusOf(
         }
       : { kind: "grafana-cloud", enabled: false };
   const monitoring = monitoringOf(plan);
-  if (monitoring === undefined) return { addons: [beszelState, grafanaState] };
+  const gitea = await giteaStatusOf(deps, plan);
+  const giteaField = gitea.enabled || gitea.secretsFileExists ? { gitea } : {};
+  if (monitoring === undefined) return { addons: [beszelState, grafanaState], ...giteaField };
   const { prometheus, loki, grafana: dashboards, front } = monitoring.memoryMb;
   return {
     addons: [beszelState, grafanaState],
@@ -139,6 +143,7 @@ export async function addonStatusOf(
       retention: monitoring.retention,
       memoryMb: prometheus + loki + dashboards + front,
     },
+    ...giteaField,
   };
 }
 
@@ -332,6 +337,9 @@ export async function addonStatus(
     }
     deps.reporter.info(describeMonitoringStatus(status.monitoring, deps.clock.now()));
   }
+  if (status.gitea !== undefined) {
+    deps.reporter.info(describeGiteaStatus(status.gitea));
+  }
   return status;
 }
 
@@ -412,10 +420,22 @@ export interface AddonOpenOptions {
 export async function addonOpen(
   deps: PhaseDeps,
   plan: DeployPlan,
-  kind: AddonKind | "monitoring",
+  kind: AddonKind | "monitoring" | "gitea",
   options: AddonOpenOptions = {},
 ): Promise<void> {
   if (kind === "monitoring") return monitoringOpen(deps, plan, options);
+  if (kind === "gitea") {
+    const status = await giteaStatusOf(deps, plan);
+    if (!status.enabled || status.url === undefined) {
+      throw new OpsCrewError("PHASE_PRECONDITION", "Self-hosted Gitea is off for this app.", {
+        hint: "Turn it on with `opscrew addon enable gitea --hostname git.example.com --admin-email you@example.com`.",
+      });
+    }
+    deps.reporter.info(
+      `Self-hosted Gitea is served over HTTPS at ${status.url} (REST API: ${status.apiUrl}). Admin credentials are in ${deps.paths.files.giteaSecrets} on this computer only.`,
+    );
+    return;
+  }
   if (kind === "grafana-cloud") {
     throw new OpsCrewError(
       "INVALID_INPUT",

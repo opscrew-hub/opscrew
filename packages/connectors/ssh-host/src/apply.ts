@@ -186,6 +186,24 @@ const SECRET_CHECKS: { [K in SecretName]: SecretCheck<K> } = {
     valid: (value) => /^[0-9a-f]{64}$/.test(value),
     invalid: "The uptime report key must be 64 lower-case hex characters.",
   },
+  giteaEnv: {
+    label: "gitea-env",
+    needs: "Gitea's secret environment file",
+    valid: (value) => value.length > 0 && isPreviewValues(value),
+    invalid: "Gitea's secret environment file must contain valid NAME=value lines.",
+  },
+  giteaPostgresEnv: {
+    label: "gitea-postgres-env",
+    needs: "Gitea's PostgreSQL secret environment file",
+    valid: (value) => value.length > 0 && isPreviewValues(value),
+    invalid: "Gitea's PostgreSQL secret environment file must contain valid NAME=value lines.",
+  },
+  giteaBootstrapEnv: {
+    label: "gitea-bootstrap-env",
+    needs: "Gitea's initial administrator credentials",
+    valid: (value) => value.length > 0 && isPreviewValues(value),
+    invalid: "Gitea's bootstrap credentials must contain valid NAME=value lines.",
+  },
 };
 
 /**
@@ -220,7 +238,12 @@ function checkSecret<K extends SecretName>(
   const valid = check.valid(value);
   if (typeof value === "string") {
     redactor.addLiteral(value, check.label);
-    if (name === "previewValues") {
+    if (
+      name === "previewValues" ||
+      name === "giteaEnv" ||
+      name === "giteaPostgresEnv" ||
+      name === "giteaBootstrapEnv"
+    ) {
       for (const text of previewValueTexts(value)) redactor.addLiteral(text, check.label);
     }
   } else {
@@ -257,7 +280,13 @@ function stdinOf(names: readonly SecretName[], secrets: ApplySecrets): string | 
       return `${b64(tls?.certificate ?? "")}\n${b64(tls?.key ?? "")}`;
     }
     const value = secrets[name] ?? "";
-    return name === "beszelHubKey" || name === "previewValues" ? b64(value) : value;
+    return name === "beszelHubKey" ||
+      name === "previewValues" ||
+      name === "giteaEnv" ||
+      name === "giteaPostgresEnv" ||
+      name === "giteaBootstrapEnv"
+      ? b64(value)
+      : value;
   });
   return `${lines.join("\n")}\n`;
 }

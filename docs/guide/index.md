@@ -76,6 +76,7 @@ catalogue. Its schema is
 - [Beszel: charts and history for your server](beszel.md)
 - [Grafana Cloud: searchable logs and metrics, free](grafana-cloud.md)
 - [Self-hosted monitoring: Prometheus, Loki and Grafana on your own server](monitoring.md)
+- [Self-hosted Gitea: provisioning and app integration](gitea-self-hosted.md)
 
 ## Using OpsCrew
 
