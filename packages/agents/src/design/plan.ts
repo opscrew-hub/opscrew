@@ -158,7 +158,7 @@ function targetFor(
     }
     return input.hosting.target;
   }
-  if (target.provider === "aws" || target.provider === "azure") {
+  if (target.provider === "aws" || target.provider === "azure" || target.provider === "gcp") {
     throw new Error(
       `${target.provider.toUpperCase()} managed-services designs are built by @opscrew/provider-${target.provider}, not VPS planTarget.`,
     );

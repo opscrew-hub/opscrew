@@ -1265,6 +1265,7 @@ describe("DeployPlan target on an existing Portainer", () => {
       "hosting",
       "aws",
       "azure",
+      "gcp",
     ]);
     expect(DesignOptionSchema.shape.target.shape.provider.options).toEqual(
       DeployProviderSchema.options,

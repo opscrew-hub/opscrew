@@ -10,6 +10,7 @@ import { formatUtc } from "@opscrew/secops";
 import { runAwsLogs } from "../aws";
 import { runAzureLogs } from "../azure";
 import type { PhaseDeps } from "../context";
+import { runGcpLogs } from "../gcp";
 import { hostingLogs } from "../hosting/logs";
 import { registerAppSecrets } from "../shared/app-secrets";
 import { hasExtraServers } from "../shared/servers";
@@ -127,6 +128,21 @@ export async function readLogs(
     }));
     return {
       first: `Azure Log Analytics (${azureLogs.workspaceId}): ${lines.length} line(s)`,
+      async *[Symbol.asyncIterator]() {
+        for (const line of lines) yield line;
+      },
+    };
+  }
+  if (plan.target.provider === "gcp") {
+    const gcpLogs = await runGcpLogs(deps, { plan, limit: tail });
+    const lines = gcpLogs.lines.map((line) => ({
+      time: line.timestamp,
+      service: line.stream,
+      stream: "stdout" as const,
+      text: line.message,
+    }));
+    return {
+      first: `Google Cloud Logging (${gcpLogs.serviceName}): ${lines.length} line(s)`,
       async *[Symbol.asyncIterator]() {
         for (const line of lines) yield line;
       },

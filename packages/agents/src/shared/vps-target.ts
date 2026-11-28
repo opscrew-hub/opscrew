@@ -136,7 +136,7 @@ export function moveProvider(target: Pick<DeployTarget, "provider">): VpsProvide
   if (provider === "localhost") throw localhostTargetNoMove();
   if (isServerlessProvider(provider)) throw serverlessTargetNoMove(provider);
   if (provider === "hosting") throw hostingNotAvailable("`opscrew retarget`");
-  if (provider === "aws" || provider === "azure") {
+  if (provider === "aws" || provider === "azure" || provider === "gcp") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `A ${provider.toUpperCase()} managed-services target does not use the single-server VPS move path. Nothing was changed.`,

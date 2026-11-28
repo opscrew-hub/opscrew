@@ -1234,6 +1234,235 @@
           },
           "required": ["provider", "mode", "region", "preset", "compute", "components"],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "gcp"
+            },
+            "mode": {
+              "type": "string",
+              "const": "gcp-managed"
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z]+-[a-z]+\\d+$"
+            },
+            "preset": {
+              "type": "string",
+              "enum": ["lean", "balanced", "production-ha"]
+            },
+            "compute": {
+              "type": "string",
+              "enum": ["cloud-run", "compute-engine"]
+            },
+            "components": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "service": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "alternatives": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "service": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "monthlyCostUsd": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "whyNot": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": ["service", "monthlyCostUsd", "whyNot"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "monthlyCostUsd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "config": {
+                    "default": {},
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": ["string", "number", "boolean"]
+                    }
+                  }
+                },
+                "required": ["service", "why", "monthlyCostUsd"],
+                "additionalProperties": false
+              }
+            },
+            "pins": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "region": {
+                  "type": "string",
+                  "pattern": "^[a-z]+-[a-z]+\\d+$"
+                },
+                "projectId": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+                },
+                "budgetCapUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "noNat": {
+                  "type": "boolean"
+                },
+                "noGlobalAlb": {
+                  "type": "boolean"
+                },
+                "existingVpcId": {
+                  "type": "string",
+                  "pattern": "^projects\\/[a-z][a-z0-9-]{4,28}[a-z0-9]\\/global\\/networks\\/[a-z][a-z0-9-]{0,62}$"
+                },
+                "existingDb": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "keepCloudflareDns": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "guardrails": {
+              "default": {
+                "privateDatabase": true,
+                "encryptionAtRest": true,
+                "automatedBackups": true,
+                "privateStorage": true,
+                "leastPrivilegeIam": true,
+                "noStaticSaKeys": true,
+                "noLegacyVpcConnector": true,
+                "noLegacyRedis": true,
+                "noGlobalAlbOnLean": true
+              },
+              "type": "object",
+              "properties": {
+                "privateDatabase": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "encryptionAtRest": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "automatedBackups": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "privateStorage": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "leastPrivilegeIam": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "noStaticSaKeys": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "noLegacyVpcConnector": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "noLegacyRedis": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "noGlobalAlbOnLean": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "exceptions": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "guardrail": {
+                    "type": "string",
+                    "enum": [
+                      "privateDatabase",
+                      "encryptionAtRest",
+                      "automatedBackups",
+                      "privateStorage",
+                      "leastPrivilegeIam",
+                      "noStaticSaKeys",
+                      "noLegacyVpcConnector",
+                      "noLegacyRedis",
+                      "noGlobalAlbOnLean"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 8
+                  }
+                },
+                "required": ["guardrail", "reason"],
+                "additionalProperties": false
+              }
+            },
+            "observability": {
+              "default": {
+                "logsRetentionDays": 30,
+                "cloudTrace": false,
+                "alerts": true
+              },
+              "type": "object",
+              "properties": {
+                "logsRetentionDays": {
+                  "default": 30,
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3650
+                },
+                "cloudTrace": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "alerts": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["provider", "mode", "region", "preset", "compute", "components"],
+          "additionalProperties": false
         }
       ]
     },

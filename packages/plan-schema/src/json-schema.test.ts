@@ -90,6 +90,7 @@ describe("JSON Schema export", () => {
             { properties: { provider: { const: "hosting" } } },
             { properties: { provider: { const: "aws" } } },
             { properties: { provider: { const: "azure" } } },
+            { properties: { provider: { const: "gcp" } } },
           ],
         },
         environment: {

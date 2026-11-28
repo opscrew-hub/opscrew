@@ -30,6 +30,14 @@
       "version": "0.1.0",
       "license": "Apache-2.0",
       "category": "devops"
+    },
+    {
+      "name": "opscrew-gcp",
+      "source": "./plugin-gcp",
+      "description": "Google Cloud (GCP) managed-services skills and guidance for OpsCrew (depends on the core opscrew plugin).",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "devops"
     }
   ]
 }

@@ -702,6 +702,16 @@ describe("onServer: the runners that deploy on or to a server", () => {
       compute: { service: "container-apps", why: "consumption", monthlyCostUsd: 8 },
     },
   } as const;
+  const gcpTarget = {
+    provider: "gcp",
+    mode: "gcp-managed",
+    region: "us-central1",
+    preset: "lean",
+    compute: "cloud-run",
+    components: {
+      compute: { service: "cloud-run", why: "scale-to-zero", monthlyCostUsd: 5 },
+    },
+  } as const;
 
   /** A staging plan of `target` (its DNS as the target needs it) with `environment`. */
   async function staging(target: string, environment: Record<string, unknown>) {
@@ -726,7 +736,9 @@ describe("onServer: the runners that deploy on or to a server", () => {
                           ? awsTarget
                           : target === "azure"
                             ? azureTarget
-                            : { ...server.target, provider: target },
+                            : target === "gcp"
+                              ? gcpTarget
+                              : { ...server.target, provider: target },
               ...(target === "portainer" || target === "localhost" ? { dns: noDns } : {}),
             };
     return {
@@ -751,6 +763,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "hosting",
       "aws",
       "azure",
+      "gcp",
     ]);
     const onServer = new Set(["hetzner", "digitalocean", "contabo", "ovhcloud", "own"]);
     const runnerHost = { name: "home-box", arch: "amd64" };

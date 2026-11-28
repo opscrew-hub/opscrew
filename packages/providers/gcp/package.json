@@ -1,0 +1,44 @@
+{
+  "name": "@opscrew/provider-gcp",
+  "version": "0.1.0",
+  "description": "Official installable OpsCrew provider plugin for Google Cloud (GCP) managed services (Feature 039, ADR 0040).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "opscrewPlugin": {
+    "id": "gcp",
+    "contractVersion": 1,
+    "companionClaudePlugin": "opscrew-gcp@opscrew"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "exports": {
+      ".": {
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/plan-schema": "workspace:*",
+    "tsup": "^8.5.1"
+  }
+}

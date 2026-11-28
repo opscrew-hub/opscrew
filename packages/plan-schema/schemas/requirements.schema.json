@@ -46,7 +46,8 @@
         "github-pages",
         "hosting",
         "aws",
-        "azure"
+        "azure",
+        "gcp"
       ]
     },
     "region": {

@@ -45,6 +45,7 @@ import {
   VpsProviderSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
+import { GcpTargetSchema } from "./gcp";
 import { checkHome } from "./home";
 import { MigrationsSchema } from "./migrations";
 import { isOutsideMember, monitoringOf } from "./monitoring";
@@ -553,9 +554,10 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
   HostingTargetSchema,
   AwsTargetSchema,
   AzureTargetSchema,
+  GcpTargetSchema,
 ]);
 
-/** True for a managed-cloud target (e.g., AWS, Azure), narrowing it to one. */
+/** True for a managed-cloud target (AWS, Azure, GCP), narrowing it to one. */
 export function isManagedCloudTarget<T extends { provider: string }>(
   target: T,
 ): target is Extract<T, { provider: ManagedCloudProvider }> {
@@ -574,6 +576,13 @@ export function isAzureTarget<T extends { provider: string }>(
   target: T,
 ): target is Extract<T, { provider: "azure" }> {
   return target.provider === "azure";
+}
+
+/** True for a GCP managed-services target, narrowing it to one. */
+export function isGcpTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: "gcp" }> {
+  return target.provider === "gcp";
 }
 
 /** True for a shared hosting account's target, narrowing it to one. */

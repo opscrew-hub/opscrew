@@ -257,7 +257,8 @@ export async function hostedAdditions(
     isServerlessProvider(provider) ||
     provider === "hosting" ||
     provider === "aws" ||
-    provider === "azure"
+    provider === "azure" ||
+    provider === "gcp"
   ) {
     return additions;
   }

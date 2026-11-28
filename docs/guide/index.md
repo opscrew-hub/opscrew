@@ -11,6 +11,7 @@ an app yet.
 - [Deploy to OVHcloud](ovhcloud.md)
 - [Deploy to Amazon Web Services (AWS)](aws.md)
 - [Deploy to Microsoft Azure](azure.md)
+- [Deploy to Google Cloud (GCP)](gcp.md)
 - [Deploy to a server you already have](own-server.md)
 - [Host your app at home](home-hosting.md)
 - [Deploy to a Portainer you already run](portainer-target.md)

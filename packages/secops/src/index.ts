@@ -55,6 +55,7 @@ export {
   blockingPolicyFailures,
   evaluateAwsPlanPolicies,
   evaluateAzurePlanPolicies,
+  evaluateGcpPlanPolicies,
   evaluatePlanPolicies,
 } from "./policies";
 export {

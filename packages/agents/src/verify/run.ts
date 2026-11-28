@@ -22,6 +22,7 @@ import { runAzureVerify } from "../azure";
 import type { PhaseDeps } from "../context";
 import { builderBranch, followsBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
+import { runGcpVerify } from "../gcp";
 import { verifyHosting } from "../hosting/verify";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
@@ -202,6 +203,24 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     return {
       checks,
       passed: azureVerify.ok,
+      url,
+      plan,
+    };
+  }
+  if (plan.target.provider === "gcp") {
+    const gcpVerify = await runGcpVerify(deps, {
+      plan,
+      ...(options.url === undefined ? {} : { url: options.url }),
+    });
+    const checks: CheckResult[] = gcpVerify.checks.map((c) =>
+      checkResult(c.id, c.id, "high", c.ok ? "pass" : "fail", c.detail),
+    );
+    const url =
+      options.url ??
+      (plan.dns.domain === undefined ? `gcp://${plan.app.name}` : `https://${plan.dns.domain}`);
+    return {
+      checks,
+      passed: gcpVerify.ok,
       url,
       plan,
     };

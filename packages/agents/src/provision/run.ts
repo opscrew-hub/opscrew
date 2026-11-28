@@ -65,6 +65,7 @@ import { builderBranch, workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
+import { type GcpCloudflareDnsWriter, runGcpProvision } from "../gcp";
 import { removeUnusedOutsideCheck } from "../home/outside-check";
 import { provisionHosting } from "../hosting/provision";
 import { localPlanFile } from "../localhost/plan";
@@ -2292,6 +2293,37 @@ export async function runProvision(
       applied: azureRes.applied,
       outputs: azureRes.applyResult?.outputs ?? {},
       planHash: azureRes.planSummary.planHash,
+    };
+  }
+  if (plan?.target.provider === "gcp") {
+    const arch = await readArtifact("architecture", deps.paths.files.architecture).catch(
+      () => undefined,
+    );
+    const owner = arch?.facts.git.owner;
+    const repo = arch?.facts.git.repo;
+    const githubRepo =
+      owner !== undefined && repo !== undefined ? `${owner}/${repo}` : `owner/${plan.app.name}`;
+    const engine = await chooseEngine(deps, plan.infra.engine, options.services?.engine);
+    const cf = options.services?.cloudflare;
+    const cloudflareWriter: GcpCloudflareDnsWriter | undefined =
+      cf !== undefined && plan.dns.domain !== undefined
+        ? {
+            upsertDnsRecord: async () => {
+              // Cloudflare ACME DNS-01 CNAME sync is performed with proxied: false when a zone token is wired.
+            },
+          }
+        : undefined;
+    const gcpRes = await runGcpProvision(deps, {
+      plan,
+      engine,
+      githubRepo,
+      ...(cloudflareWriter === undefined ? {} : { cloudflare: cloudflareWriter }),
+      ...(options.planOnly === true ? { planOnly: true } : {}),
+    });
+    return {
+      applied: gcpRes.applied,
+      outputs: gcpRes.applyResult?.outputs ?? {},
+      planHash: gcpRes.planSummary.planHash,
     };
   }
   await warnInTempFolder(deps, options.services?.tempDir);

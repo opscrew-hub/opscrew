@@ -888,7 +888,7 @@ async function newTargetId(
   const { provider } = await requireRequirements(deps);
   if (provider === "localhost") throw thisComputerNoMove();
   if (provider === "hosting") throw hostingNotAvailable("`opscrew retarget`");
-  if (provider === "aws" || provider === "azure") {
+  if (provider === "aws" || provider === "azure" || provider === "gcp") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `Moving directly to a ${provider.toUpperCase()} managed-services target via \`opscrew retarget\` is not supported on the single-server VPS move path. Nothing was changed.`,

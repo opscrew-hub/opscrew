@@ -70,6 +70,7 @@ import {
   sharedStorage,
   withSharedParts,
 } from "../environments/shared-parts";
+import { runGcpDesign } from "../gcp";
 import {
   buildLocalhostOption,
   LOCALHOST_PRICE_NOTE,
@@ -1071,6 +1072,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       lines: azureRes.lines,
     };
   }
+  if (inputs.requirements.provider === "gcp") {
+    const gcpRes = await runGcpDesign(deps, {
+      facts: inputs.facts,
+      requirements: inputs.requirements,
+      ...(options.optionId === undefined ? {} : { optionId: options.optionId }),
+      ...(options.choose === undefined ? {} : { choose: options.choose }),
+      ...(options.setFlags === undefined ? {} : { setFlags: options.setFlags }),
+      ...(options.branch === undefined ? {} : { branch: options.branch }),
+    });
+    return {
+      options: gcpRes.options,
+      chosen: gcpRes.chosen,
+      plan: gcpRes.plan,
+      priceSource: gcpRes.priceSource,
+      warnings: gcpRes.warnings,
+      lines: gcpRes.lines,
+    };
+  }
   const name = paths.environment;
   const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
   // The plan without its placement, which design completes from the user's edits below.
@@ -1920,6 +1939,7 @@ function providerName(id: DeployProvider): string {
   if (id === "hosting") return "a hosting account";
   if (id === "aws") return "AWS";
   if (id === "azure") return "Azure";
+  if (id === "gcp") return "Google Cloud";
   return providerProfile(id).displayName;
 }
 

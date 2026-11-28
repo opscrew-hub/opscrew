@@ -7,6 +7,7 @@ import { runAwsDestroy } from "../aws";
 import { runAzureDestroy } from "../azure";
 import { planUptimeTeardown, type UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
+import { runGcpDestroy } from "../gcp";
 import { destroyHosting } from "../hosting/destroy";
 import { destroyLocalhost } from "../localhost/destroy";
 import { acmStaysOn, appZoneDomain } from "../previews/app-zone";
@@ -631,6 +632,15 @@ async function destroyDeployment(
   if (plan.target.provider === "azure") {
     const setup = await setupEngine(deps, plan, options);
     const res = await runAzureDestroy(deps, { plan, engine: setup.engine });
+    return {
+      destroyed: res.destroyed ? res.planSummary.changes : [],
+      secretsRemoved: [],
+      remaining: [],
+    };
+  }
+  if (plan.target.provider === "gcp") {
+    const setup = await setupEngine(deps, plan, options);
+    const res = await runGcpDestroy(deps, { plan, engine: setup.engine });
     return {
       destroyed: res.destroyed ? res.planSummary.changes : [],
       secretsRemoved: [],

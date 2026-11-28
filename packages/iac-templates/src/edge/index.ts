@@ -162,7 +162,11 @@ export function edgeProxy(plan: DeployPlan): EdgeProxy {
   if (isHostingTarget(plan.target)) {
     throw wrongTarget("OpsCrew's reverse proxy isn't available for a hosting account.");
   }
-  if (plan.target.provider === "aws" || plan.target.provider === "azure") {
+  if (
+    plan.target.provider === "aws" ||
+    plan.target.provider === "azure" ||
+    plan.target.provider === "gcp"
+  ) {
     throw wrongTarget(
       `OpsCrew's server reverse proxy isn't available for a ${plan.target.provider.toUpperCase()} managed target.`,
     );

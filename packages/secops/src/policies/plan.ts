@@ -11,6 +11,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { evaluateAwsPlanPolicies } from "./aws";
 import { evaluateAzurePlanPolicies } from "./azure";
+import { evaluateGcpPlanPolicies } from "./gcp";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
@@ -320,6 +321,9 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
   }
   if (deployPlan.target.provider === "azure") {
     return evaluateAzurePlanPolicies(planJson, deployPlan);
+  }
+  if (deployPlan.target.provider === "gcp") {
+    return evaluateGcpPlanPolicies(planJson, deployPlan);
   }
   const resources = plannedResources(planJson);
   const proxiedBehindCloudflare =

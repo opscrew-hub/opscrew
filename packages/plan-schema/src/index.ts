@@ -28,6 +28,8 @@ export {
   resolveEnvironmentPaths,
 } from "./environments";
 export * from "./facts";
+export * from "./gcp";
+export * from "./gcp";
 export * from "./interview";
 export {
   ArtifactError,

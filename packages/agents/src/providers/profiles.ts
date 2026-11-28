@@ -346,6 +346,7 @@ const NOT_ON_SERVER = {
   hosting: "an app on a hosting account",
   aws: "an AWS managed-services target",
   azure: "a Microsoft Azure managed-services target",
+  gcp: "a Google Cloud managed-services target",
 } as const satisfies Record<Exclude<DeployProvider, VpsProviderId>, string>;
 
 /** The provider of a plan whose app runs on one server. */

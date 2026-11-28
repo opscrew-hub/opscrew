@@ -14,6 +14,7 @@ export * from "./dns";
 export * from "./domain";
 export * from "./drift";
 export * from "./environments";
+export * from "./gcp";
 export { hostingReach } from "./hosting/panels";
 export * from "./init";
 export * from "./interview";

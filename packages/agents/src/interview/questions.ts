@@ -221,6 +221,15 @@ export function buildQuestions(
               },
             ]
           : []),
+        ...(context.managedProviders?.includes("gcp") === true
+          ? [
+              {
+                value: "gcp",
+                label: "Google Cloud (GCP)",
+                hint: "managed Google Cloud services (Cloud Run, Cloud SQL, Memorystore Redis, Cloud Storage, Secret Manager, Artifact Registry, Direct VPC Egress); uses the optional @opscrew/provider-gcp plugin (`opscrew plugin add gcp`)",
+              },
+            ]
+          : []),
         ...(context.serverless ?? []).map((id) => ({
           value: id,
           label: providerProfile(id).displayName,

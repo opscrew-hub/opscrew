@@ -1,0 +1,12 @@
+{
+  "name": "opscrew-gcp",
+  "version": "0.1.0",
+  "description": "Google Cloud (GCP) managed-services skills for OpsCrew (Cloud Run, Cloud SQL, Memorystore Redis, Cloud Storage, Secret Manager, Direct VPC Egress, keyless GitHub WIF).",
+  "author": {
+    "name": "OpsCrew",
+    "url": "https://opscrew.dev"
+  },
+  "repository": "https://github.com/opscrew-hub/opscrew",
+  "license": "Apache-2.0",
+  "dependencies": ["opscrew"]
+}
