@@ -171,6 +171,7 @@ export {
   planPublicSsh,
   planRunner,
   planRunnerHost,
+  planServerFirewall,
   planTeardown,
   planTunnelToken,
   planUndo,
@@ -178,6 +179,22 @@ export {
 } from "./plan";
 export type { HostPrivilege } from "./privilege";
 export { type PublicSshParams, PublicSshParamsSchema } from "./public-ssh";
+export {
+  readServerFirewallNetworks,
+  SERVER_FIREWALL_NETWORKS_FILE,
+  SERVER_FIREWALL_RULES,
+  SERVER_FIREWALL_SERVICE,
+  SERVER_FIREWALL_TABLE,
+  type ServerFirewallNetworksRecord,
+  ServerFirewallNetworksRecordSchema,
+  type ServerFirewallParams,
+  ServerFirewallParamsSchema,
+  sameServerFirewallNetworks,
+  serverFirewallFileHashes,
+  serverFirewallListing,
+  serverFirewallNetworksJson,
+  serverFirewallRulesFile,
+} from "./server-firewall";
 export {
   type ApplyOptions,
   type ApplyResult,

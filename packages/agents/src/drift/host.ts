@@ -121,6 +121,7 @@ export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   sshd: "SSH settings",
   ufw: "Firewall (ufw)",
   "ssh-firewall": "SSH firewall (nftables table inet opscrew)",
+  "server-firewall": "Server's own firewall (nftables table inet opscrew-firewall)",
   "web-filter": "Web filter (only Cloudflare reaches ports 80 and 443)",
   network: "The private network (WireGuard)",
   "network-filter": "The private network's filter (only the app's servers and granted devices)",
@@ -827,10 +828,11 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
       return tunnelDetails(facts, step, app);
     case "portainer":
       return portainerDetails(facts, step);
-    // Planned by planNetwork, planPublicSsh and planGrant, never in the setup plan drift compares with.
+    // Planned by planNetwork, planPublicSsh, planServerFirewall and planGrant, never in the setup plan drift compares with.
     case "network":
     case "network-filter":
     case "public-ssh":
+    case "server-firewall":
     case "grant":
       return [];
     // Planned by planAddon and planUptimeReport, never in the setup plan drift compares with.

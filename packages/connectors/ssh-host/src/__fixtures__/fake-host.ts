@@ -53,6 +53,11 @@ import { NETWORK_DROP_IN, networkPort } from "../network";
 import { NETWORK_FILTER_SCRIPT_PREFIX, NETWORK_FILTER_UNIT, networkFilterDropInPath } from "../network-filter";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { runnerUnitText } from "../runner-unit";
+import {
+  SERVER_FIREWALL_NETWORKS_FILE,
+  SERVER_FIREWALL_RULES,
+  SERVER_FIREWALL_SERVICE,
+} from "../server-firewall";
 import { SSH_FIREWALL_RULES, SSH_FIREWALL_UNIT } from "../ssh-firewall";
 import {
   UPTIME_REPORT_CONFIG_DIR,
@@ -443,6 +448,12 @@ export class FakeHost implements RemoteExec {
   /** Pending dead-man switches: step -> restore. */
   timers = new Map<string, () => void>();
   armedSeconds: number[] = [];
+  /** The server's own firewall (`firewallCheck: "server"`, issue #62). */
+  serverFirewall: { table: string | null; unitInstalled: boolean; reloads: number } = {
+    table: null,
+    unitInstalled: true,
+    reloads: 0,
+  };
 
   /** Each app's GitHub Actions runner in /srv/runners/<app>, by app. */
   runners = new Map<string, FakeRunner>();
@@ -1548,7 +1559,7 @@ export class FakeHost implements RemoteExec {
     if (!root && !(loginAddon && p.RUN_AS === "login")) {
       return result("", 1, "Permission denied\n");
     }
-    const deadMan = /^deadman\.(arm|cancel|trigger)\.(sshd|ufw|ssh-firewall)$/.exec(name);
+    const deadMan = /^deadman\.(arm|cancel|trigger)\.(sshd|ufw|ssh-firewall|server-firewall)$/.exec(name);
     if (deadMan?.[1] && deadMan[2]) return this.deadMan(deadMan[1], deadMan[2], p);
     switch (name) {
       // docker
@@ -1719,6 +1730,45 @@ export class FakeHost implements RemoteExec {
         this.files.delete(SSH_FIREWALL_RULES);
         this.sshFirewall = { table: null, enabled: false };
         return result();
+
+      // server-firewall (in-place update of /etc/opscrew/firewall.nft & firewall-networks.json)
+      case "server-firewall.networks.read": {
+        const content = this.files.get(SERVER_FIREWALL_NETWORKS_FILE);
+        return content === undefined ? result("absent\n") : result(`present\n${content}`);
+      }
+      case "server-firewall.check":
+      case "server-firewall.verify": {
+        const is = (path: string, sum: string | undefined) => {
+          const content = this.files.get(path);
+          return content !== undefined && sha256(content) === sum;
+        };
+        const ok =
+          this.nftInstalled &&
+          is(SERVER_FIREWALL_RULES, p.RULES_SHA256) &&
+          is(SERVER_FIREWALL_NETWORKS_FILE, p.NETWORKS_SHA256) &&
+          this.serverFirewall.table === p.LISTING &&
+          !this.timers.has("server-firewall");
+        return name.endsWith("check")
+          ? this.check(ok, {
+              rules: this.files.has(SERVER_FIREWALL_RULES) ? "present" : "absent",
+              networks: this.files.has(SERVER_FIREWALL_NETWORKS_FILE) ? "present" : "absent",
+            })
+          : this.verify(ok, p);
+      }
+      case "server-firewall.apply": {
+        if (!this.nftInstalled) return fail("The nft command (from the nftables package) is not installed.");
+        if (!this.serverFirewall.unitInstalled) {
+          return fail(`${SERVER_FIREWALL_SERVICE} is not installed on this server.`);
+        }
+        const decode = (value: string | undefined) => Buffer.from(value ?? "", "base64").toString("utf8");
+        this.files.set(SERVER_FIREWALL_RULES, decode(p.RULES_B64));
+        this.fileModes.set(SERVER_FIREWALL_RULES, "0:0:600");
+        this.serverFirewall.table = p.LISTING ?? "";
+        this.serverFirewall.reloads += 1;
+        this.files.set(SERVER_FIREWALL_NETWORKS_FILE, decode(p.NETWORKS_B64));
+        this.fileModes.set(SERVER_FIREWALL_NETWORKS_FILE, "0:0:600");
+        return result();
+      }
 
       // ufw
       // web-filter
@@ -3233,6 +3283,20 @@ export class FakeHost implements RemoteExec {
             this.sshFirewall = firewall;
           }
           this.timers.delete("ssh-firewall");
+        });
+      } else if (step === "server-firewall") {
+        // The undo puts both firewall.nft and firewall-networks.json (or its absence) back and reloads.
+        const rules = this.files.get(SERVER_FIREWALL_RULES);
+        const networks = this.files.get(SERVER_FIREWALL_NETWORKS_FILE);
+        const table = this.serverFirewall.table;
+        this.timers.set("server-firewall", () => {
+          if (rules === undefined) this.files.delete(SERVER_FIREWALL_RULES);
+          else this.files.set(SERVER_FIREWALL_RULES, rules);
+          if (networks === undefined) this.files.delete(SERVER_FIREWALL_NETWORKS_FILE);
+          else this.files.set(SERVER_FIREWALL_NETWORKS_FILE, networks);
+          this.serverFirewall.table = table;
+          this.serverFirewall.reloads += 1;
+          this.timers.delete("server-firewall");
         });
       } else {
         const active = this.ufwActive;

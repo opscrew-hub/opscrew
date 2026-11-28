@@ -27,6 +27,7 @@ import {
 import { savedPlanOf, writePlanSidecar } from "../provision/plan-apply";
 import { planStop } from "../shared";
 import { syncFirewalls } from "../shared/firewalls";
+import { applyServerFirewallUpdates, type ServerFirewallRun } from "../shared/server-firewall";
 import {
   clearPending,
   type MoveAction,
@@ -40,7 +41,10 @@ import type { MoveSession } from "./session";
 export type PlanSession = Pick<
   MoveSession,
   "deps" | "services" | "engine" | "dir" | "env" | "plan" | "command" | "approve"
->;
+> & {
+  /** Present on server move sessions (`MoveSession`), used to reach `module.server_previous`. */
+  servers?: MoveSession["servers"];
+};
 
 /** What a plan step came to. */
 export type PlanStep =
@@ -132,6 +136,16 @@ export function quietly(deps: PhaseDeps): PhaseDeps {
   };
 }
 
+function serverFirewallRun(session: PlanSession, input: InfraPlanInput): ServerFirewallRun {
+  const previousHost = session.servers?.from?.ipv4;
+  return {
+    plan: input.deployPlan ?? session.plan,
+    ...(session.services.remote !== undefined ? { remote: session.services.remote } : {}),
+    ...(session.services.serverHost !== undefined ? { host: session.services.serverHost } : {}),
+    ...(previousHost !== undefined ? { previousHost } : {}),
+  };
+}
+
 function planAndApplyOptions(session: PlanSession, input: InfraPlanInput): PlanAndApplyOptions {
   return {
     engine: session.engine,
@@ -142,6 +156,7 @@ function planAndApplyOptions(session: PlanSession, input: InfraPlanInput): PlanA
     command: session.command,
     phase: "retarget",
     firewalls: session.services.firewalls,
+    serverFirewall: serverFirewallRun(session, input),
     ...(input.notes && input.notes.length > 0 ? { approvalNotes: input.notes } : {}),
     ...(input.costDelta !== undefined ? { costDelta: input.costDelta } : {}),
     ...(input.redesignHint !== undefined ? { redesignHint: input.redesignHint } : {}),
@@ -243,6 +258,23 @@ export async function prepareInfraPlan(
       },
       planned.outputs,
     );
+    const pendingFirewall = planned.serverFirewallPlans?.find((o) =>
+      o.plan.steps.some((step) => step.state === "change"),
+    );
+    if (pendingFirewall !== undefined) {
+      if (deps.interactive || session.approve === pendingFirewall.hash) {
+        if (session.approve === pendingFirewall.hash) session.approve = undefined;
+        await applyServerFirewallUpdates(session.deps, {
+          run: serverFirewallRun(session, input),
+          planJson: saved?.planJson,
+          planOnly: false,
+          command: session.command,
+          phase: "retarget",
+        });
+      } else {
+        return { kind: "pending", planHash: pendingFirewall.hash };
+      }
+    }
     return { kind: "unchanged", outputs: planned.outputs };
   }
   try {

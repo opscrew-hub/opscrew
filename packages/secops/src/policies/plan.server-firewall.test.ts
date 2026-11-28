@@ -4,7 +4,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, vi } from "vitest";
-import { blockingPolicyFailures, evaluatePlanPolicies } from "./index";
+import {
+  blockingPolicyFailures,
+  evaluatePlanPolicies,
+  existingOwnFirewallServers,
+  serverFirewallUpdates,
+} from "./index";
 
 // A provider with no cloud firewall whose server's own firewall is the first step of its
 // startup-script first boot, as Kamatera's is; built on Hetzner's definition so every other fact
@@ -324,7 +329,7 @@ describe("a provider whose firewall is the server's own", () => {
       });
       for (const text of said) expect(failed?.message).toContain(text);
       expect(failed?.message).toContain("set at its first boot");
-      expect(failed?.message).toContain("OpsCrew can't change them in place yet");
+      expect(failed?.message).toContain("/etc/opscrew/firewall-networks.json");
       expect(failed?.message).toContain("opscrew/plan.yaml");
       expect(blockingPolicyFailures(results).map((r) => r.policyId)).toEqual([
         "server-firewall-as-planned",
@@ -443,5 +448,142 @@ describe("a provider whose firewall is the server's own", () => {
       expect(result(results, "ssh-not-public"), actions.join()).toMatchObject({ passed: false });
       expect(blockingPolicyFailures(results).map((r) => r.policyId)).toEqual(["ssh-not-public"]);
     }
+  });
+
+  it("compares against /etc/opscrew/firewall-networks.json when supplied, falling back to first-boot otherwise", () => {
+    const narrowed = ["203.0.113.7/32"];
+    const address = "module.server.own_server.this";
+    // First-boot script still has WORLD, but /etc/opscrew/firewall-networks.json records narrowed SSH.
+    const json = planJson(startupScript({ ssh: WORLD, web: WORLD }), ["no-op"], {
+      ssh: narrowed,
+      web: WORLD,
+    });
+    const matched = evaluatePlanPolicies(json, deployPlan({ sshAllowedCidrs: narrowed }), {
+      serverFirewallNetworks: { [address]: { ssh: narrowed, web: WORLD, wireguard: "" } },
+    });
+    expect(blockingPolicyFailures(matched)).toEqual([]);
+    expect(result(matched, "server-firewall-as-planned")).toMatchObject({
+      passed: true,
+      message: expect.stringContaining("/etc/opscrew/firewall-networks.json"),
+    });
+    expect(
+      serverFirewallUpdates(json, {
+        serverFirewallNetworks: { [address]: { ssh: narrowed, web: WORLD, wireguard: "" } },
+      }),
+    ).toEqual([]);
+
+    // When /etc/opscrew/firewall-networks.json differs from the plan, serverFirewallUpdates lists it.
+    const stale = serverFirewallUpdates(json, {
+      serverFirewallNetworks: {
+        [address]: { ssh: ["198.51.100.1/32"], web: WORLD, wireguard: "" },
+      },
+    });
+    expect(stale).toHaveLength(1);
+    expect(stale[0]).toMatchObject({
+      address,
+      moduleCall: "server",
+      server: "app",
+      planned: { ssh: narrowed, web: WORLD, wireguard: "" },
+    });
+
+    // Without serverFirewallNetworks, falls back to first-boot script and detects the difference.
+    const fallback = serverFirewallUpdates(json);
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0]?.current).toEqual({ ssh: WORLD, web: WORLD, wireguard: "" });
+  });
+
+  it("passes server-firewall-as-planned when in-place host plan is enabled, while still enforcing port and SSH policies", () => {
+    const narrowed = ["203.0.113.7/32"];
+    const address = "module.server.own_server.this";
+    const json = planJson(startupScript({ ssh: WORLD, web: WORLD }), ["no-op"], {
+      ssh: narrowed,
+      web: CLOUDFLARE,
+      wireguard: 51820,
+    });
+    const plan = deployPlan({ sshAllowedCidrs: narrowed, proxied: true, wireguard: 51820 });
+    const passed = evaluatePlanPolicies(json, plan, {
+      inPlaceServerFirewallAddresses: new Set([address]),
+    });
+    expect(result(passed, "server-firewall-as-planned")).toMatchObject({
+      passed: true,
+      message: expect.stringContaining("SHA-256 hash-approved host plan"),
+    });
+    expect(result(passed, "ssh-not-public")?.passed).toBe(true);
+    expect(result(passed, "origin-cloudflare-only")?.passed).toBe(true);
+    expect(result(passed, "no-open-admin-ports")?.passed).toBe(true);
+    expect(blockingPolicyFailures(passed)).toEqual([]);
+
+    // Still fails ssh-not-public if the planned networks open SSH to the world against plan.yaml.
+    const tampered = planJson(startupScript({ ssh: narrowed, web: WORLD }), ["no-op"], {
+      ssh: WORLD,
+      web: WORLD,
+    });
+    const refused = evaluatePlanPolicies(tampered, deployPlan({ sshAllowedCidrs: narrowed }), {
+      inPlaceServerFirewallAddresses: new Set([address]),
+    });
+    expect(result(refused, "server-firewall-as-planned")?.passed).toBe(true);
+    expect(result(refused, "ssh-not-public")?.passed).toBe(false);
+    expect(blockingPolicyFailures(refused).map((r) => r.policyId)).toEqual(["ssh-not-public"]);
+  });
+
+  it("fails closed when serverFirewallReadErrors is set, even if the first-boot script matches the plan", () => {
+    const address = "module.server.own_server.this";
+    const json = planJson(startupScript({ ssh: WORLD, web: WORLD }), ["no-op"], {
+      ssh: WORLD,
+      web: WORLD,
+    });
+    const failed = evaluatePlanPolicies(json, deployPlan(), {
+      serverFirewallReadErrors: { [address]: "SSH timed out" },
+    });
+    const check = result(failed, "server-firewall-as-planned");
+    expect(check).toMatchObject({
+      passed: false,
+      severity: "critical",
+      resource: address,
+    });
+    expect(check?.message).toContain("SSH timed out");
+    expect(check?.message).toContain("will not fall back to the first-boot script");
+    expect(blockingPolicyFailures(failed).map((r) => r.policyId)).toEqual([
+      "server-firewall-as-planned",
+    ]);
+  });
+
+  it("lists existing own-firewall servers for app, extra servers, and retarget previous", () => {
+    expect(existingOwnFirewallServers(planJson(startupScript({}), ["no-op"]))).toEqual([
+      {
+        address: "module.server.own_server.this",
+        moduleCall: "server",
+        server: "app",
+        planned: { ssh: WORLD, web: WORLD, wireguard: "" },
+      },
+    ]);
+    expect(
+      existingOwnFirewallServers(
+        planJson(startupScript({ web: [] }), ["no-op"], {
+          module: "server_db",
+          webServer: false,
+          wireguard: 51820,
+        }),
+      ),
+    ).toEqual([
+      {
+        address: "module.server_db.own_server.this",
+        moduleCall: "server_db",
+        server: "db",
+        planned: { ssh: WORLD, web: [], wireguard: "51820" },
+      },
+    ]);
+    expect(
+      existingOwnFirewallServers(
+        planJson(startupScript({}), ["no-op"], { module: "server_previous" }),
+      ),
+    ).toEqual([
+      {
+        address: "module.server_previous.own_server.this",
+        moduleCall: "server_previous",
+        server: "previous",
+        planned: { ssh: WORLD, web: WORLD, wireguard: "" },
+      },
+    ]);
   });
 });

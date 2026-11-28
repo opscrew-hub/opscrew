@@ -225,11 +225,59 @@ function serverFirewallScript(values: Record<string, unknown>): string | undefin
 }
 
 /** The networks a server's own firewall lets in: SSH's, the web ports' and WireGuard's port. */
-interface ServerFirewallNetworks {
+export interface ServerFirewallNetworks {
   ssh: string[];
   web: string[];
   /** The UDP port, or `""` for none. */
   wireguard: string;
+}
+
+/**
+ * Extra context for {@link evaluatePlanPolicies} on providers whose firewall is the server's own
+ * (`firewallCheck: "server"`, issue #62).
+ */
+export interface EvaluatePlanPoliciesOptions {
+  /**
+   * Applied networks read from `/etc/opscrew/firewall-networks.json` over SSH for existing servers,
+   * keyed by Terraform resource address (e.g. `module.server.kamatera_server.this`). When present
+   * for a server, `server-firewall-as-planned` compares the plan against this record instead of
+   * the first-boot script in Terraform state (falling back to the first-boot script only when SSH
+   * succeeded and confirmed no record exists yet for that server).
+   */
+  serverFirewallNetworks?: Readonly<Record<string, ServerFirewallNetworks | undefined>>;
+  /**
+   * Read failures from trying to inspect `/etc/opscrew/firewall-networks.json` over SSH, keyed by
+   * Terraform resource address. Whenever an entry is present for a server,
+   * `server-firewall-as-planned` fails closed (critical) instead of falling back to the first-boot
+   * script in Terraform state, which may be stale after an earlier in-place firewall update.
+   */
+  serverFirewallReadErrors?: Readonly<Record<string, string | undefined>>;
+  /**
+   * Terraform resource addresses of existing servers that are reachable for an in-place
+   * `server-firewall` host plan update: when networks differ on one of these addresses,
+   * `server-firewall-as-planned` passes (noting the SHA-256 hash-approved host plan update) while
+   * still enforcing port and SSH policies on the planned networks.
+   */
+  inPlaceServerFirewallAddresses?: ReadonlySet<string>;
+}
+
+/** One existing server on a `firewallCheck: "server"` provider found in a Terraform plan JSON. */
+export interface ExistingOwnFirewallServer {
+  address: string;
+  moduleCall: string;
+  /** OpsCrew server name: `app`, an extra server's name, or `previous` during a retarget. */
+  server: string;
+  planned: ServerFirewallNetworks | undefined;
+}
+
+/** One existing server on a `firewallCheck: "server"` provider whose own firewall needs updating. */
+export interface PlannedServerFirewallUpdate {
+  address: string;
+  moduleCall: string;
+  server: string;
+  current: ServerFirewallNetworks;
+  planned: ServerFirewallNetworks;
+  differences: string[];
 }
 
 /** The words of `text` (a script's space-separated networks). */
@@ -247,14 +295,8 @@ function scriptNetworks(script: string | undefined): ServerFirewallNetworks | un
   return { ssh: words(ssh), web: words(web), wireguard };
 }
 
-/**
- * The inbound rules of the server's own firewall, read from the step in the planned server's
- * first-boot script: SSH from `ssh_sources`, the web ports from `web_sources`, the WireGuard port
- * from everywhere. Undefined when no script holds the step or its networks can't be read.
- */
-function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[] | undefined {
-  const networks = scriptNetworks(serverFirewallScript(server.values));
-  if (networks === undefined) return undefined;
+/** Converts {@link ServerFirewallNetworks} into {@link PlannedFirewallRule}s for port/SSH checks. */
+function serverFirewallRulesFromNetworks(networks: ServerFirewallNetworks): PlannedFirewallRule[] {
   const { ssh, web, wireguard } = networks;
   const rule = (protocol: string, port: string, sources: string[]) =>
     sources.length === 0 ? [] : [{ direction: "in", protocol, port, source_ips: sources }];
@@ -265,6 +307,17 @@ function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[]
     ...rule("udp", "443", web),
     ...(wireguard === "" ? [] : rule("udp", wireguard, [...OPEN_TO_ALL])),
   ];
+}
+
+/**
+ * The inbound rules of the server's own firewall, read from the step in the planned server's
+ * first-boot script: SSH from `ssh_sources`, the web ports from `web_sources`, the WireGuard port
+ * from everywhere. Undefined when no script holds the step or its networks can't be read.
+ */
+function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[] | undefined {
+  const networks = scriptNetworks(serverFirewallScript(server.values));
+  if (networks === undefined) return undefined;
+  return serverFirewallRulesFromNetworks(networks);
 }
 
 /** The `change` of the resource at `address` in the plan's `resource_changes`. */
@@ -387,18 +440,106 @@ function portDifference(noun: string, live: string, planned: string): string[] {
   return [`WireGuard: ${said}`];
 }
 
+/** Maps a server module call name (`server`, `server_db`, `server_previous`) to its OpsCrew server name. */
+function serverNameOfModule(moduleCall: string): string {
+  if (moduleCall === "server") return "app";
+  if (moduleCall.startsWith("server_")) return moduleCall.slice("server_".length);
+  return moduleCall;
+}
+
+/** True when `options` allows updating the server at `address` in place via a host plan. */
+function allowsInPlaceUpdate(address: string, options?: EvaluatePlanPoliciesOptions): boolean {
+  return options?.inPlaceServerFirewallAddresses?.has(address) === true;
+}
+
+/**
+ * Lists every existing server in `planJson` on a `firewallCheck: "server"` provider (excluding
+ * servers being imported in this plan): its address, module call, OpsCrew server name (`app`,
+ * `<extra>`, or `previous`), and the networks the plan gives it. Callers use this to read
+ * `/etc/opscrew/firewall-networks.json` over SSH before calling {@link evaluatePlanPolicies}.
+ */
+export function existingOwnFirewallServers(planJson: unknown): ExistingOwnFirewallServer[] {
+  const resources = plannedResources(planJson);
+  const out: ExistingOwnFirewallServer[] = [];
+  for (const provider of PROVIDERS) {
+    if (provider.firewallCheck !== "server") continue;
+    for (const server of resources.filter((r) => r.type === provider.server)) {
+      if (!serverExists(planJson, server.address) || serverImported(planJson, server.address)) {
+        continue;
+      }
+      const moduleCall = /^module\.([^.]+)\./.exec(server.address)?.[1];
+      if (moduleCall === undefined) continue;
+      out.push({
+        address: server.address,
+        moduleCall,
+        server: serverNameOfModule(moduleCall),
+        planned: plannedNetworks(planJson, server.address),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Lists every existing server in `planJson` on a `firewallCheck: "server"` provider whose current
+ * networks (from `options.serverFirewallNetworks[address]`, falling back to the first-boot script
+ * in Terraform state when no record exists yet) differ from the plan's networks and therefore need
+ * an in-place `server-firewall` host plan.
+ */
+export function serverFirewallUpdates(
+  planJson: unknown,
+  options?: Pick<EvaluatePlanPoliciesOptions, "serverFirewallNetworks">,
+): PlannedServerFirewallUpdate[] {
+  const resources = plannedResources(planJson);
+  const out: PlannedServerFirewallUpdate[] = [];
+  for (const provider of PROVIDERS) {
+    if (provider.firewallCheck !== "server") continue;
+    for (const server of resources.filter((r) => r.type === provider.server)) {
+      if (!serverExists(planJson, server.address) || serverImported(planJson, server.address)) {
+        continue;
+      }
+      const moduleCall = /^module\.([^.]+)\./.exec(server.address)?.[1];
+      if (moduleCall === undefined) continue;
+      const current =
+        options?.serverFirewallNetworks?.[server.address] ??
+        scriptNetworks(storedServerScript(planJson, server.address));
+      const planned = plannedNetworks(planJson, server.address);
+      if (current === undefined || planned === undefined) continue;
+      const differences = [
+        ...networkDifference("SSH", provider.noun, current.ssh, planned.ssh),
+        ...networkDifference("the web ports", provider.noun, current.web, planned.web),
+        ...portDifference(provider.noun, current.wireguard, planned.wireguard),
+      ];
+      if (differences.length === 0) continue;
+      out.push({
+        address: server.address,
+        moduleCall,
+        server: serverNameOfModule(moduleCall),
+        current,
+        planned,
+        differences,
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * `server-firewall-as-planned` for a server that already exists on a provider whose firewall is
- * the server's own: the networks its first boot set (read from the script it was created with) must
- * be the plan's, since OpsCrew can't change them in place. Fails critical on any difference, and
- * when either side can't be read.
+ * the server's own: compares the plan's networks against `/etc/opscrew/firewall-networks.json`
+ * (read over SSH and supplied in `options.serverFirewallNetworks`), falling back to the first-boot
+ * script in Terraform state only when no record exists yet. When networks differ and an in-place
+ * host plan is available (`allowsInPlaceUpdate`), passes and records that OpsCrew updates the
+ * firewall through a hash-approved host plan; otherwise fails critical.
  */
 function storedFirewallResult(
   noun: string,
   planJson: unknown,
   server: PlannedResourceJson,
-): PolicyResult {
-  const stored = scriptNetworks(storedServerScript(planJson, server.address));
+  options?: EvaluatePlanPoliciesOptions,
+): { policy: PolicyResult; inPlacePlanned?: ServerFirewallNetworks } {
+  const recorded = options?.serverFirewallNetworks?.[server.address];
+  const stored = recorded ?? scriptNetworks(storedServerScript(planJson, server.address));
   const planned = plannedNetworks(planJson, server.address);
   const check = (passed: boolean, message: string) =>
     result(
@@ -411,22 +552,37 @@ function storedFirewallResult(
     );
   const live = `\`opscrew secure\` reads the rules live on the ${noun}`;
   if (serverImported(planJson, server.address)) {
-    return check(
-      true,
-      `The plan imports the ${noun}, which OpsCrew didn't create: its provider doesn't give back the script it started with, so this plan can't hold its firewall to the plan's networks. After the apply, ${live} and fails on any rule that differs from the plan's, or on no firewall of OpsCrew's at all.`,
-    );
+    return {
+      policy: check(
+        true,
+        `The plan imports the ${noun}, which OpsCrew didn't create: its provider doesn't give back the script it started with, so this plan can't hold its firewall to the plan's networks. After the apply, ${live} and fails on any rule that differs from the plan's, or on no firewall of OpsCrew's at all.`,
+      ),
+    };
+  }
+  const readError = options?.serverFirewallReadErrors?.[server.address];
+  if (readError !== undefined) {
+    return {
+      policy: check(
+        false,
+        `OpsCrew could not read /etc/opscrew/firewall-networks.json on the ${noun} over SSH (${readError}), so it will not fall back to the first-boot script in Terraform state (which may be stale after an earlier in-place firewall update). Nothing was changed: check that the ${noun} is reachable over SSH and try again; ${live}.`,
+      ),
+    };
   }
   if (stored === undefined) {
-    return check(
-      false,
-      `The ${noun} already exists, and OpsCrew can't read the networks its own firewall was set at its first boot with (the startup script it was created with has no firewall step OpsCrew can read), so it can't tell whether this plan changes them, and it can't change them in place yet. Nothing was changed: ${live}.`,
-    );
+    return {
+      policy: check(
+        false,
+        `The ${noun} already exists, and OpsCrew can't read the networks its own firewall was set at its first boot with (neither /etc/opscrew/firewall-networks.json nor a readable firewall step in its startup script was found), so it can't tell whether this plan changes them. Nothing was changed: ${live}.`,
+      ),
+    };
   }
   if (planned === undefined) {
-    return check(
-      false,
-      `OpsCrew can't read the networks this plan gives the ${noun} (the root's \`ssh_allowed_cidrs\` and \`http_allowed_cidrs\`, or its module's \`wireguard_port\`), so it can't hold them to the ones its own firewall was set at its first boot with. Run \`opscrew provision\` again, which writes them; ${live}.`,
-    );
+    return {
+      policy: check(
+        false,
+        `OpsCrew can't read the networks this plan gives the ${noun} (the root's \`ssh_allowed_cidrs\` and \`http_allowed_cidrs\`, or its module's \`wireguard_port\`), so it can't hold them to the ones on the ${noun}. Run \`opscrew provision\` again, which writes them; ${live}.`,
+      ),
+    };
   }
   const differences = [
     ...networkDifference("SSH", noun, stored.ssh, planned.ssh),
@@ -434,15 +590,34 @@ function storedFirewallResult(
     ...portDifference(noun, stored.wireguard, planned.wireguard),
   ];
   if (differences.length === 0) {
-    return check(
-      true,
-      `The ${noun}'s own firewall, set at its first boot, has this plan's networks.`,
-    );
+    return {
+      policy: check(
+        true,
+        recorded !== undefined
+          ? `The ${noun}'s own firewall (recorded in /etc/opscrew/firewall-networks.json) has this plan's networks.`
+          : `The ${noun}'s own firewall, set at its first boot, has this plan's networks.`,
+      ),
+    };
   }
-  return check(
-    false,
-    `The ${noun} already exists, and its own firewall was set at its first boot with networks this plan changes (${differences.join("; ")}). OpsCrew can't change them in place yet, so applying this plan would leave the old rules on the ${noun}. Change opscrew/plan.yaml back so that it gives the ${noun} the networks it has, then run the command again; ${live}.`,
-  );
+  if (allowsInPlaceUpdate(server.address, options)) {
+    return {
+      policy: check(
+        true,
+        `The ${noun}'s own firewall differs from this plan's networks (${differences.join("; ")}), and OpsCrew updates /etc/opscrew/firewall.nft and /etc/opscrew/firewall-networks.json in place through a SHA-256 hash-approved host plan under the automatic undo.`,
+      ),
+      inPlacePlanned: planned,
+    };
+  }
+  const source =
+    recorded !== undefined
+      ? "recorded in /etc/opscrew/firewall-networks.json"
+      : "set at its first boot";
+  return {
+    policy: check(
+      false,
+      `The ${noun} already exists, and its own firewall was ${source} with networks this plan changes (${differences.join("; ")}). Applying this infrastructure plan alone would leave the old rules on the ${noun}: run \`opscrew provision\` while the ${noun} is reachable over SSH to update /etc/opscrew/firewall.nft and /etc/opscrew/firewall-networks.json in place with a hash-approved host plan, or change opscrew/plan.yaml back; ${live}.`,
+    ),
+  };
 }
 
 /**
@@ -468,6 +643,7 @@ function providerPolicies(
   resources: PlannedResourceJson[],
   deployPlan: DeployPlan,
   proxiedBehindCloudflare: boolean,
+  options?: EvaluatePlanPoliciesOptions,
 ): PolicyResult[] {
   const results: PolicyResult[] = [];
   const servers = resources.filter((r) => r.type === provider.server);
@@ -483,7 +659,8 @@ function providerPolicies(
       ? provider.attached(server, firewalls, planJson)
       : imported ||
         (existing
-          ? storedServerScript(planJson, server.address) !== undefined
+          ? options?.serverFirewallNetworks?.[server.address] !== undefined ||
+            storedServerScript(planJson, server.address) !== undefined
           : serverRules !== undefined);
     const hasKeys = isSet(server, provider.sshKeyAttribute ?? "ssh_keys");
     const attachedText = imported
@@ -511,11 +688,19 @@ function providerPolicies(
         server.address,
       ),
     );
-    if (existing) results.push(storedFirewallResult(noun, planJson, server));
-    if (serverRules !== undefined) {
+    let inPlaceRules: PlannedFirewallRule[] | undefined;
+    if (existing) {
+      const checked = storedFirewallResult(noun, planJson, server, options);
+      results.push(checked.policy);
+      if (checked.inPlacePlanned !== undefined) {
+        inPlaceRules = serverFirewallRulesFromNetworks(checked.inPlacePlanned);
+      }
+    }
+    const checkedRules = serverRules ?? inPlaceRules;
+    if (checkedRules !== undefined) {
       results.push(
-        ...openPortResults(server, serverRules, proxiedBehindCloudflare, deployPlan),
-        sshPolicyResult(server, serverRules, deployPlan),
+        ...openPortResults(server, checkedRules, proxiedBehindCloudflare, deployPlan),
+        sshPolicyResult(server, checkedRules, deployPlan),
       );
     }
     if (provider.deleteProtection) {
@@ -577,14 +762,18 @@ function providerPolicies(
  * target's root (Cloudflare Tunnels, their routes and Access, no server) is evaluated like any
  * other: the server and firewall policies find nothing to check there.
  */
-export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
+export function evaluatePlanPolicies(
+  planJson: unknown,
+  deployPlan: DeployPlan,
+  options?: EvaluatePlanPoliciesOptions,
+): PolicyResult[] {
   const resources = plannedResources(planJson);
   const proxiedBehindCloudflare =
     deployPlan.dns.provider === "cloudflare" &&
     deployPlan.dns.proxied &&
     deployPlan.security.httpAllowedFrom === "edge";
   const results = PROVIDERS.flatMap((provider) =>
-    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCloudflare),
+    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCloudflare, options),
   );
 
   if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {

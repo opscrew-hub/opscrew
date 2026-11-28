@@ -528,6 +528,7 @@ async function guardedApply(
     sshd: "SSH settings",
     ufw: "firewall settings",
     "ssh-firewall": "SSH firewall settings",
+    "server-firewall": "server firewall settings",
   }[deadMan.step];
   await runOk(
     ctx,

@@ -1243,6 +1243,7 @@ async function provisionFlow(
   // A server the plan removes at a provider that cancels it at the end of its term.
   const cancel = { deps, plan, services, command, phase };
   let applied: Awaited<ReturnType<typeof planAndApply>>;
+  let infraApprovalRecorded = false;
   try {
     applied = await planAndApply(deps, {
       engine,
@@ -1255,6 +1256,11 @@ async function provisionFlow(
       firewalls: services.firewalls,
       providerBackups: services.providerBackups,
       servers: (provider) => givenServers(cancel, provider),
+      serverFirewall: {
+        plan: beforeApply(plan),
+        ...(services.remote !== undefined ? { remote: services.remote } : {}),
+        ...(services.serverHost !== undefined ? { host: services.serverHost } : {}),
+      },
       ...first.hooks,
       // An extra server no longer in the plan is deleted only with its name typed, as destroy asks.
       // A saved plan's servers taken over are named from its imports (it is not planned again).
@@ -1275,10 +1281,18 @@ async function provisionFlow(
         await shutDownCancelled(cancel, saved);
         await markApplyStarted(deps, plan, saved);
       },
-      // The servers the apply cancelled: when each one's contract ends, shown and audited before
-      // the firewalls are set, whose failure would end the run.
-      afterApply: async (saved) => {
+      // The servers the apply cancelled and the infra apply approval: recorded immediately after
+      // apply succeeds so a subsequent firewall host-plan failure never loses the approval record.
+      afterApply: async (saved, approval) => {
         await showCancelDates(cancel, saved);
+        if (approval !== undefined) {
+          approvals.push(approvalEntry(approval));
+          infraApprovalRecorded = true;
+          await writePlanIfChanged(
+            deps,
+            persisted({ ...plan, approvals: [...plan.approvals, ...approvals] }),
+          );
+        }
       },
       // A server the plan cancels stays billed until its term ends: no cost change is claimed.
       withoutCostDelta: (saved) => cancelledByPlan(plan, saved).length > 0,
@@ -1304,7 +1318,10 @@ async function provisionFlow(
       rendered.filter((file) => file.path === rootMainFile(plan)),
     );
   }
-  if (applied.approval) approvals.push(approvalEntry(applied.approval));
+  if (applied.approval && !infraApprovalRecorded) approvals.push(approvalEntry(applied.approval));
+  for (const outcome of applied.serverFirewallPlans ?? []) {
+    if (outcome.approval) approvals.push(approvalEntry(outcome.approval));
+  }
   if (first.host !== undefined) {
     earlyHost ??= first.host;
     if (first.host.approval) approvals.push(approvalEntry(first.host.approval));
@@ -1414,8 +1431,9 @@ async function provisionFlow(
       repository: machineRepository,
     });
     // The app's servers' own host plans (feature 018), then the monitoring's (feature 020), shown
-    // and saved where the servers exist.
+    // and saved where the servers exist (including any in-place server firewall updates).
     const serverPlans = [
+      ...(applied.serverFirewallPlans ?? []),
       ...(await serverHostPlans(deps, { ...serverPlansInput, plan, appPending, planOnly: true })),
       ...(await monitoringHostPlans(deps, plan, { ...serverPlansInput, planOnly: true })),
     ];

@@ -51,7 +51,16 @@ export {
   serviceHostChecks,
   type TcpConnect,
 } from "./hardening";
-export { blockingPolicyFailures, evaluatePlanPolicies } from "./policies";
+export {
+  blockingPolicyFailures,
+  type EvaluatePlanPoliciesOptions,
+  type ExistingOwnFirewallServer,
+  evaluatePlanPolicies,
+  existingOwnFirewallServers,
+  type PlannedServerFirewallUpdate,
+  type ServerFirewallNetworks,
+  serverFirewallUpdates,
+} from "./policies";
 export {
   type ProxyAdditionsContext,
   type ProxyRefusal,

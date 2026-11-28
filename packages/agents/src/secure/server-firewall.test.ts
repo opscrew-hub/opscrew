@@ -171,19 +171,15 @@ describe("the server firewall's check", () => {
     expect(result.remediation).toContain(
       `http_allowed_cidrs\` in ${plan().infra.dir}/terraform.tfvars.json`,
     );
-    // Said honestly: the rules are the first boot's, which nothing reloads from the plan.
+    // Points to `opscrew provision` when the plan's networks changed, and `systemctl restart` when
+    // the rules on the server changed outside OpsCrew.
     expect(result.remediation).toContain(
-      "Its rules are set at the server's first boot, and OpsCrew can't change them in place yet: `opscrew provision` holds the plan to the networks the server was created with.",
+      "run `opscrew provision` to update /etc/opscrew/firewall.nft and reload opscrew-firewall.service in place with a hash-approved host plan.",
     );
-    // First the plan put back, or a new server: editing the rules file alone would make secure
-    // pass while provision still holds the plan to the networks the server was created with.
-    const back = result.remediation?.indexOf("change opscrew/plan.yaml back") ?? -1;
+    const provision = result.remediation?.indexOf("run `opscrew provision`") ?? -1;
     const restart = result.remediation?.indexOf("systemctl restart opscrew-firewall.service") ?? -1;
-    expect(back).toBeGreaterThan(-1);
-    expect(restart).toBeGreaterThan(back);
-    expect(result.remediation).toContain(
-      "or replace the server (remove it, then run `opscrew provision`).",
-    );
+    expect(provision).toBeGreaterThan(-1);
+    expect(restart).toBeGreaterThan(provision);
     expect(result.remediation).toContain(
       "), `systemctl restart opscrew-firewall.service` loads them again as written in /etc/opscrew/firewall.nft. Then run `opscrew secure` again.",
     );

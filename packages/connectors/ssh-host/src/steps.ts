@@ -140,6 +140,16 @@ import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 import { PINNED_IMAGE_RE } from "./privilege";
 import { networkSshRule, PublicSshFieldsSchema, publicSshRules } from "./public-ssh";
 import { runnerUnitText } from "./runner-unit";
+import {
+  SERVER_FIREWALL_FUNCTIONS,
+  SERVER_FIREWALL_NETWORKS_FILE,
+  SERVER_FIREWALL_RULES,
+  SERVER_FIREWALL_SERVICE,
+  ServerFirewallFieldsSchema,
+  serverFirewallListing,
+  serverFirewallNetworksJson,
+  serverFirewallRulesFile,
+} from "./server-firewall";
 import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
 import {
   SSH_FIREWALL_FUNCTIONS,
@@ -215,7 +225,7 @@ import {
 } from "./web-filter";
 
 /** Steps whose change can cut SSH access; they run under the dead-man switch. */
-export type GuardedStep = "sshd" | "ufw" | "ssh-firewall";
+export type GuardedStep = "sshd" | "ufw" | "ssh-firewall" | "server-firewall";
 
 export interface StepScripts {
   /** Read-only: prints `state=in-place|change` and `prev.<key>=<value>` lines. */
@@ -1186,6 +1196,74 @@ systemctl restart "$SERVICE"`,
       : { preApply: applyScript("ssh-firewall.install", {}, "", NFT_INSTALL) }),
     deadMan: { step: "ssh-firewall", capture: SSH_FIREWALL_CAPTURE, params: {} },
     doing: "turning on OpsCrew's SSH firewall",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// server-firewall: in-place update of a server's own nftables firewall (see server-firewall.ts)
+
+const SERVER_FIREWALL_HELPERS = `${SERVER_FIREWALL_FUNCTIONS}
+${FILE_IS}`;
+
+const SERVER_FIREWALL_UNDO_TIMER =
+  "! systemctl is-active --quiet opscrew-undo-server-firewall.timer";
+
+/**
+ * Dead-man capture of the server's own firewall: saves both `/etc/opscrew/firewall.nft` and
+ * `/etc/opscrew/firewall-networks.json`, and writes the undo script that restores both files (or
+ * removes `/etc/opscrew/firewall-networks.json` if it did not exist yet) and reloads
+ * `opscrew-firewall.service`.
+ */
+const SERVER_FIREWALL_CAPTURE = `if [ -f ${SERVER_FIREWALL_RULES} ]; then cp -p ${SERVER_FIREWALL_RULES} ${DEAD_MAN_DIR}/server-firewall.prev; else rm -f ${DEAD_MAN_DIR}/server-firewall.prev; fi
+if [ -f ${SERVER_FIREWALL_NETWORKS_FILE} ]; then cp -p ${SERVER_FIREWALL_NETWORKS_FILE} ${DEAD_MAN_DIR}/server-firewall.networks.prev; else rm -f ${DEAD_MAN_DIR}/server-firewall.networks.prev; fi
+cat > ${DEAD_MAN_DIR}/server-firewall.undo.sh <<'OPSCREW_UNDO'
+${undoPreamble("server-firewall", "puts the previous server firewall and its networks record back.")}
+if [ -f ${DEAD_MAN_DIR}/server-firewall.prev ]; then
+  cp -p ${DEAD_MAN_DIR}/server-firewall.prev ${SERVER_FIREWALL_RULES}
+  systemctl restart ${SERVER_FIREWALL_SERVICE} >/dev/null 2>&1 || nft -f ${SERVER_FIREWALL_RULES} >/dev/null 2>&1 || true
+fi
+if [ -f ${DEAD_MAN_DIR}/server-firewall.networks.prev ]; then
+  cp -p ${DEAD_MAN_DIR}/server-firewall.networks.prev ${SERVER_FIREWALL_NETWORKS_FILE}
+else
+  rm -f ${SERVER_FIREWALL_NETWORKS_FILE}
+fi
+OPSCREW_UNDO`;
+
+function serverFirewallScripts(step: HostStep): StepScripts {
+  const p = params(step, ServerFirewallFieldsSchema);
+  const rules = serverFirewallRulesFile(p);
+  const networks = serverFirewallNetworksJson(p);
+  return scripts({
+    name: "server-firewall",
+    params: {
+      RULES: SERVER_FIREWALL_RULES,
+      NETWORKS_FILE: SERVER_FIREWALL_NETWORKS_FILE,
+      SERVICE: SERVER_FIREWALL_SERVICE,
+      RULES_B64: base64(rules),
+      RULES_SHA256: sha256Hex(rules),
+      NETWORKS_B64: base64(networks),
+      NETWORKS_SHA256: sha256Hex(networks),
+      LISTING: serverFirewallListing(p),
+    },
+    helpers: SERVER_FIREWALL_HELPERS,
+    verify: `  command -v nft >/dev/null 2>&1 || return 1
+  file_is "$RULES" "$RULES_SHA256" || return 1
+  file_is "$NETWORKS_FILE" "$NETWORKS_SHA256" || return 1
+  [ "$(nft_server_table)" = "$LISTING" ] || return 1
+  ${SERVER_FIREWALL_UNDO_TIMER}`,
+    snapshot: `if [ -f "$RULES" ]; then echo prev.rules=present; else echo prev.rules=absent; fi
+if [ -f "$NETWORKS_FILE" ]; then echo prev.networks=present; else echo prev.networks=absent; fi`,
+    apply: `command -v nft >/dev/null 2>&1 || fail 'The nft command (from the nftables package) is not installed.'
+systemctl cat "$SERVICE" >/dev/null 2>&1 || fail "$SERVICE is not installed on this server."
+install -d -m 0700 ${OPSCREW_DIR}
+printf '%s' "$RULES_B64" | base64 -d | write_file "$RULES" 0600
+# Reloads only table inet opscrew-firewall in one transaction; Docker and ufw tables stay intact.
+systemctl restart "$SERVICE"
+printf '%s' "$NETWORKS_B64" | base64 -d | write_file "$NETWORKS_FILE" 0600`,
+    failed: "The server's own firewall is not in effect as planned.",
+    deadMan: { step: "server-firewall", capture: SERVER_FIREWALL_CAPTURE, params: {} },
+    doing: "updating the server's own firewall",
     timeoutMs: 2 * MINUTE,
   });
 }
@@ -5025,6 +5103,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return ufwScripts(plan.purpose, step);
     case "ssh-firewall":
       return sshFirewallScripts(step);
+    case "server-firewall":
+      return serverFirewallScripts(step);
     case "web-filter":
       return webFilterScripts(step);
     case "network":
@@ -5117,6 +5197,7 @@ echo armed`,
  * The lock and the cancelled mark stay until the next arm.
  */
 export function cancelScript(step: GuardedStep): string {
+  const extraPrev = step === "server-firewall" ? ` "${DEAD_MAN_DIR}/$STEP.networks.prev"` : "";
   return buildScript(
     `deadman.cancel.${step}`,
     { STEP: step, UNIT: deadManUnit(step) },
@@ -5133,7 +5214,7 @@ else
   # An undo still holds the lock after 80 seconds: count the change as undone.
   result=fired
 fi
-rm -f "${DEAD_MAN_DIR}/$STEP.undo.sh" "${DEAD_MAN_DIR}/$STEP.prev" "${DEAD_MAN_DIR}/$STEP.fired"
+rm -f "${DEAD_MAN_DIR}/$STEP.undo.sh" "${DEAD_MAN_DIR}/$STEP.prev"${extraPrev} "${DEAD_MAN_DIR}/$STEP.fired"
 echo "$result"`,
   );
 }

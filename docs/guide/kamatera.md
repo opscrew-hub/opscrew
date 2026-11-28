@@ -100,15 +100,20 @@ installs the server's own firewall instead:
   OpsCrew's table, never the rules Docker and ufw keep.
 - **Checked:** `npx opscrew secure` reads the live rules from the server and fails when they are
   missing or differ from the plan, with the steps to fix them.
-- **Not updated after the first boot.** Kamatera would have to make a new server to run a changed
-  startup script, so OpsCrew can't change the rules in place yet. So once the server exists,
-  `npx opscrew provision` and `npx opscrew retarget` refuse a plan that changes the networks the
-  firewall lets in, before anything is approved. That covers a new address for SSH, new Cloudflare
-  ranges, or a private network for a second server. Change `opscrew/plan.yaml` back, or remove the
-  app's server and provision it again. If `npx opscrew secure` finds the live rules differ from the
-  plan, it gives the steps: put the plan back or replace the server when the plan changed, and when
-  the rules on the server were changed, as root from Kamatera's console, `systemctl restart
-  opscrew-firewall.service` loads them again as they were written.
+- **Updated in place with a hash-approved host plan.** When `opscrew/plan.yaml` or Cloudflare's
+  ranges change the networks of an existing server (narrower or new SSH ranges, updated Cloudflare
+  IP ranges, or a private network's WireGuard port), `npx opscrew provision` (and
+  `npx opscrew retarget`) compares the plan against `/etc/opscrew/firewall-networks.json` on the
+  server (falling back to the first-boot script if the server has not been updated in place yet)
+  and emits a SHA-256 hash-approved host plan. After you approve that hash, OpsCrew rewrites
+  `/etc/opscrew/firewall.nft`, reloads `opscrew-firewall.service` (replacing only
+  `inet opscrew-firewall` in one transaction), and atomically writes
+  `/etc/opscrew/firewall-networks.json` (mode `0600`, root-owned) under a dead-man rollback: if a
+  fresh SSH login fails afterwards, the server restores both `/etc/opscrew/firewall.nft` (reloaded)
+  and the previous `/etc/opscrew/firewall-networks.json` automatically. If `npx opscrew secure`
+  finds the live rules differ from the plan, run `npx opscrew provision` when the plan's networks
+  changed, or as root from Kamatera's console run `systemctl restart opscrew-firewall.service` when
+  the live rules were altered outside OpsCrew.
 - **Kamatera's console firewall is yours to add.** Open the server in the console, its **Firewall**
   tab, and turn it on as a second layer. OpsCrew doesn't manage it or check it: let in at least SSH
   from your networks and the web ports, or your app and OpsCrew lose the server.

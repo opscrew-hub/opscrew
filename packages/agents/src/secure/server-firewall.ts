@@ -110,9 +110,7 @@ export function serverFirewallCheck(
   const sshSources = plan.security.sshAllowedCidrs.map(listed);
   const wireguardPort = plan.network?.members.find((member) => member.name === server)?.port;
   const tfvars = `${plan.infra.dir}/terraform.tfvars.json`;
-  // The first boot's rules: nothing reloads them from the plan (the module ignores changes to the
-  // startup script), so the remediation never says that changing the plan's files fixes them.
-  const remediation = `${provider.name} has no cloud firewall, so this is the server's only one. Its rules are set at the server's first boot, and OpsCrew can't change them in place yet: \`opscrew provision\` holds the plan to the networks the server was created with. If the plan's networks changed (the web ports' are \`http_allowed_cidrs\` in ${tfvars}), change opscrew/plan.yaml back to the server's networks, or replace the server (remove it, then run \`opscrew provision\`). If the rules on the server changed, as root on the server (from ${provider.texts.runbook.console}), \`systemctl restart ${FIREWALL_UNIT}\` loads them again as written in ${FIREWALL_RULES}. Then run \`opscrew secure\` again.`;
+  const remediation = `${provider.name} has no cloud firewall, so this is the server's only one. If the plan's networks changed (the web ports' are \`http_allowed_cidrs\` in ${tfvars}), run \`opscrew provision\` to update ${FIREWALL_RULES} and reload ${FIREWALL_UNIT} in place with a hash-approved host plan. If the rules on the server changed outside OpsCrew, as root on the server (from ${provider.texts.runbook.console}), \`systemctl restart ${FIREWALL_UNIT}\` loads them again as written in ${FIREWALL_RULES}. Then run \`opscrew secure\` again.`;
   const base = {
     id: "server-firewall",
     title: "The server's own firewall lets in only what the plan allows",

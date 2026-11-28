@@ -30,6 +30,7 @@ export const HOST_STEP_IDS = [
   "sshd",
   "ufw",
   "ssh-firewall",
+  "server-firewall",
   "web-filter",
   "network",
   "network-filter",

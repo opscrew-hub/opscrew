@@ -29,6 +29,7 @@ import {
   type DeepToolResult,
   defaultTcpConnect,
   evaluatePlanPolicies,
+  existingOwnFirewallServers,
   type HostCheck,
   type LocalDocker,
   localDocker,
@@ -60,6 +61,7 @@ import type { OwnServerServices, PortainerServices } from "../provision/types";
 import { type RunnerGitHubApi, runnerChecks } from "../runners";
 import { appServerShell, hidesServerAddress, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import { readExistingServerFirewalls } from "../shared/server-firewall";
 import { hasExtraServers } from "../shared/servers";
 import {
   proxyCertificateHosts,
@@ -558,7 +560,41 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     (plan.deployment.lastPlanHash === undefined
       ? undefined
       : (await findSavedPlan(paths.files.plansDir, plan.deployment.lastPlanHash))?.planJson);
-  const policies = planJson === undefined ? undefined : evaluatePlanPolicies(planJson, plan);
+  const secureRemote = options.remote;
+  const extraRemote = options.serverRemote;
+  const serverFirewalls =
+    planJson !== undefined && existingOwnFirewallServers(planJson).length > 0
+      ? await readExistingServerFirewalls(
+          deps,
+          {
+            plan,
+            ...(secureRemote !== undefined || extraRemote !== undefined
+              ? {
+                  remote: (targetHost: string, server: string) => {
+                    if (server === APP_SERVER && secureRemote !== undefined) return secureRemote;
+                    if (extraRemote !== undefined) return extraRemote(targetHost);
+                    return undefined;
+                  },
+                }
+              : {}),
+          },
+          planJson,
+          "secure",
+        )
+      : undefined;
+  const policies =
+    planJson === undefined
+      ? undefined
+      : evaluatePlanPolicies(
+          planJson,
+          plan,
+          serverFirewalls === undefined
+            ? undefined
+            : {
+                serverFirewallNetworks: serverFirewalls.networks,
+                serverFirewallReadErrors: serverFirewalls.errors,
+              },
+        );
 
   let hostChecks: CheckResult[] = [];
   let probes: CheckResult[] = [];

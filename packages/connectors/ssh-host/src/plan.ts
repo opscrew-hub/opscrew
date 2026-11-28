@@ -136,6 +136,17 @@ import {
   publicSshRules,
 } from "./public-ssh";
 import {
+  SERVER_FIREWALL_NETWORKS_FILE,
+  SERVER_FIREWALL_RULES,
+  SERVER_FIREWALL_SERVICE,
+  SERVER_FIREWALL_TABLE,
+  type ServerFirewallNetworksRecord,
+  type ServerFirewallParams,
+  ServerFirewallParamsSchema,
+  sameServerFirewallNetworks,
+  serverFirewallFields,
+} from "./server-firewall";
+import {
   SSH_FIREWALL_RULES,
   SSH_FIREWALL_SERVICE,
   SSH_FIREWALL_TABLE,
@@ -3422,6 +3433,59 @@ export function planPublicSsh(
     found[0],
     inPlace,
     `${reason} The change runs under the automatic undo: when new SSH logins fail, the server puts the previous rules back on its own.`,
+  );
+  return networkPlan(input.app, [item], found);
+}
+
+/**
+ * A one-step host plan that updates a server's own nftables firewall in place (issue #62,
+ * `firewallCheck: "server"`): rewrites `/etc/opscrew/firewall.nft` in the same form the first boot
+ * writes, reloads `opscrew-firewall.service` (which replaces only `inet opscrew-firewall` in one
+ * transaction), and writes `/etc/opscrew/firewall-networks.json` (0600, owned by root) beside it.
+ * Runs under the dead-man switch: if new SSH logins fail, the server restores both
+ * `/etc/opscrew/firewall.nft` (reloaded) and `/etc/opscrew/firewall-networks.json` on its own.
+ *
+ * When `input.current` (read from `/etc/opscrew/firewall-networks.json` over SSH) already matches
+ * `input.serverFirewall`, the step is planned as `in-place`; otherwise as `change` (and the
+ * step's `check` script on the server also skips it if the files and live table already match).
+ */
+export function planServerFirewall(
+  facts: HostFacts,
+  input: {
+    app: string;
+    serverFirewall: ServerFirewallParams;
+    current?: ServerFirewallNetworksRecord | undefined;
+  },
+  command: string,
+): HostPlan {
+  const { found } = networkPlanStart(facts, input.app, command);
+  const p = parseInput(
+    ServerFirewallParamsSchema,
+    input.serverFirewall,
+    "The server firewall networks are not valid",
+    "This is a problem in OpsCrew; please report it.",
+  );
+  const inPlace = input.current !== undefined && sameServerFirewallNetworks(input.current, p);
+  const some = (list: readonly string[]) =>
+    list.length === 0
+      ? "none"
+      : list.length <= 6
+        ? listText(list)
+        : `${list.slice(0, 5).join(", ")} and ${list.length - 5} more`;
+  const summary = [
+    `SSH: ${some(p.ssh)}`,
+    `web ports (80/443): ${some(p.web)}`,
+    ...(p.wireguardPort !== undefined ? [`WireGuard: UDP ${p.wireguardPort}`] : []),
+  ].join("; ");
+  const title = `Update the server's own firewall (${SERVER_FIREWALL_RULES})`;
+  const reason = `Rewrites ${SERVER_FIREWALL_RULES} (${summary}), reloads ${SERVER_FIREWALL_SERVICE} (replacing only ${SERVER_FIREWALL_TABLE}), and records the applied networks in ${SERVER_FIREWALL_NETWORKS_FILE}. Runs under the automatic undo: when new SSH logins fail, the server puts the previous rules and networks record back on its own.`;
+  const item = networkStep(
+    "server-firewall",
+    title,
+    serverFirewallFields(p),
+    found[0],
+    inPlace,
+    reason,
   );
   return networkPlan(input.app, [item], found);
 }
