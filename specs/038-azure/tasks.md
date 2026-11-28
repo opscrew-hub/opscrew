@@ -24,4 +24,4 @@
 
 ## Wave 4 — Validation, Opus 5.5 Review & Full Gate (Lead)
 
-- [ ] **T3808 (lead):** Add `azurerm` OpenTofu validation test (`packages/providers/azure/src/azurerm.validate.test.ts`), run standalone Opus 5.5 high-effort review over `038-azure` (`origin/034-aws...HEAD`), fix all findings, and pass full-repo merge gate (`gate-038 exit 0`).
+- [x] **T3808 (lead):** Add `azurerm` OpenTofu validation test (`packages/providers/azure/src/azurerm.validate.test.ts`), run standalone Opus 5.5 high-effort review over `038-azure` (`origin/034-aws...HEAD`), fix all findings, and pass full-repo merge gate (`gate-038 exit 0`).
