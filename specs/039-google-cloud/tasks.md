@@ -24,4 +24,4 @@
 
 ## Wave 4 — Validation, Opus 5.5 Review & Full Gate (Lead)
 
-- [ ] **T3908 (lead):** Add real `hashicorp/google ~> 8.0` OpenTofu validation test (`packages/providers/gcp/src/google.validate.test.ts`), run standalone Opus 5.5 high-effort review over `039-google-cloud` (`origin/038-azure...HEAD`), fix all findings, verify zero `@opscrew/*` runtime imports in `dist/index.js`, and pass full-repo merge gate (`gate-039 exit 0`).
+- [x] **T3908 (lead):** Add real `hashicorp/google ~> 8.0` OpenTofu validation test (`packages/providers/gcp/src/google.validate.test.ts`), run standalone Opus 5.5 high-effort review over `039-google-cloud` (`origin/038-azure...HEAD`), fix all findings, verify zero `@opscrew/*` runtime imports in `dist/index.js`, and pass full-repo merge gate (`gate-039 exit 0`).
