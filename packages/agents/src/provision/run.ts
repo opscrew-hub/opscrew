@@ -2299,24 +2299,95 @@ export async function runProvision(
     const arch = await readArtifact("architecture", deps.paths.files.architecture).catch(
       () => undefined,
     );
-    const owner = arch?.facts.git.owner;
-    const repo = arch?.facts.git.repo;
-    const githubRepo =
-      owner !== undefined && repo !== undefined ? `${owner}/${repo}` : `owner/${plan.app.name}`;
+    const owner = arch?.facts.git.owner?.trim();
+    const repo = arch?.facts.git.repo?.trim();
+    if (!owner || !repo) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        "Cannot pin Google Cloud Workload Identity Federation without a known GitHub repository (owner/repo).",
+        {
+          hint: "Run `opscrew analyze` in a repository with a GitHub origin remote first so WIF pins the exact repository.",
+        },
+      );
+    }
+    const githubRepo = `${owner}/${repo}`;
     const engine = await chooseEngine(deps, plan.infra.engine, options.services?.engine);
     const cf = options.services?.cloudflare;
+    const cfWritable =
+      cf !== undefined &&
+      cf !== null &&
+      "updateRecord" in cf &&
+      typeof (cf as Record<string, unknown>).updateRecord === "function" &&
+      "batchCreateRecords" in cf &&
+      typeof (cf as Record<string, unknown>).batchCreateRecords === "function"
+        ? (cf as typeof cf & {
+            updateRecord: (
+              zoneId: string,
+              recordId: string,
+              fields: { content: string; proxied: false },
+            ) => Promise<unknown>;
+            batchCreateRecords: (
+              zoneId: string,
+              records: readonly {
+                type: "CNAME";
+                name: string;
+                content: string;
+                ttl: number;
+                proxied: false;
+                comment: string;
+              }[],
+            ) => Promise<unknown>;
+          })
+        : undefined;
     const cloudflareWriter: GcpCloudflareDnsWriter | undefined =
-      cf !== undefined && plan.dns.domain !== undefined
+      cfWritable !== undefined && plan.dns.domain !== undefined
         ? {
-            upsertDnsRecord: async () => {
-              // Cloudflare ACME DNS-01 CNAME sync is performed with proxied: false when a zone token is wired.
+            upsertDnsRecord: async (rec) => {
+              const zone = await cfWritable.findZone(rec.domain);
+              if (zone === undefined) {
+                throw new OpsCrewError(
+                  "PHASE_PRECONDITION",
+                  `Cloudflare zone for "${rec.domain}" was not found; cannot create DNS-01 CNAME "${rec.name}".`,
+                );
+              }
+              const existing = await cfWritable.listDnsRecords(zone.id, {
+                name: rec.name,
+                type: rec.type,
+              });
+              const first = existing[0];
+              if (first !== undefined) {
+                await cfWritable.updateRecord(zone.id, first.id, {
+                  content: rec.content,
+                  proxied: false,
+                });
+              } else {
+                await cfWritable.batchCreateRecords(zone.id, [
+                  {
+                    type: rec.type,
+                    name: rec.name,
+                    content: rec.content,
+                    ttl: 1,
+                    proxied: false,
+                    comment: "Managed by OpsCrew (GCP Certificate Manager DNS-01)",
+                  },
+                ]);
+              }
             },
           }
         : undefined;
+    const envSecrets = plan.app.env
+      .filter((e) => e.secret)
+      .flatMap((e) => {
+        const value = deps.env[e.name];
+        return value !== undefined && value.length > 0
+          ? [{ store: "secret-manager" as const, name: e.name, value }]
+          : [];
+      });
     const gcpRes = await runGcpProvision(deps, {
       plan,
       engine,
       githubRepo,
+      ...(envSecrets.length > 0 ? { secrets: envSecrets } : {}),
       ...(cloudflareWriter === undefined ? {} : { cloudflare: cloudflareWriter }),
       ...(options.planOnly === true ? { planOnly: true } : {}),
     });

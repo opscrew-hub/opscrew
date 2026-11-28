@@ -116,6 +116,16 @@ export function applyGcpOverrides(
           draft.components.compute.monthlyCostUsd,
           draft.region,
         );
+        if (
+          entry.value === "compute-engine" &&
+          draft.components.edge?.service === "global-alb-cloud-cdn"
+        ) {
+          draft.components.edge.service = "caddy-tls";
+          draft.components.edge.why =
+            "On-instance Caddy automatic HTTPS replaces Cloud Run's serverless NEG Global ALB on Compute Engine.";
+          draft.components.edge.monthlyCostUsd = 0;
+          draft.components.edge.config = { globalAlb: false, cloudCdn: false };
+        }
       }
       changes.push(`${head}: ${String(prev)} -> ${String(entry.value)}`);
       continue;

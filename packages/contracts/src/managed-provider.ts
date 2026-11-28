@@ -151,6 +151,7 @@ export interface ManagedCloudConnector {
   readLogs(input: {
     readonly logGroup: string;
     readonly region: string;
+    readonly computeKind?: string;
     readonly since?: Date;
     readonly limit?: number;
     readonly filterPattern?: string;
@@ -162,6 +163,7 @@ export interface ManagedCloudConnector {
   listSnapshots(input: {
     readonly region: string;
     readonly identifierPrefix: string;
+    readonly service?: string;
   }): Promise<readonly ManagedCloudSnapshotEntry[]>;
   takeSnapshot(input: {
     readonly region: string;
@@ -231,6 +233,7 @@ export interface ManagedCloudProviderDefinition {
     readonly branch?: string;
     readonly containerPort?: number;
     readonly endpointUrl?: string;
+    readonly secretNames?: readonly string[];
   }) => readonly ManagedCloudRenderedFile[];
   /** Pure keyless OIDC GitHub Actions deploy workflow renderer. */
   readonly renderWorkflow?: (input: {

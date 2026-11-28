@@ -219,6 +219,7 @@ export function designGcpTarget(input: DesignGcpInput): DesignGcpResult {
 
   const hasCustomDomain = Boolean(input.requirements.domain?.trim());
   const wantsAlb =
+    compute.kind === "cloud-run" &&
     pins.noGlobalAlb !== true &&
     (preset === "production-ha" || (preset === "balanced" && hasCustomDomain));
   if (wantsAlb) {

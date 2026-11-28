@@ -143,6 +143,7 @@ export const GCP_MANAGED_PROVIDER: ManagedCloudProviderDefinition = {
       ...(input.domain === undefined ? {} : { domain: input.domain }),
       ...(input.dnsProvider === undefined ? {} : { dnsProvider: input.dnsProvider }),
       ...(input.containerPort === undefined ? {} : { containerPort: input.containerPort }),
+      ...(input.secretNames === undefined ? {} : { secretNames: input.secretNames }),
       github: {
         owner,
         repo,

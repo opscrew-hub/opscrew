@@ -85,6 +85,7 @@ export async function runGcpLogs(
   const lines = await connector.readLogs({
     logGroup: serviceName,
     region: target.region,
+    computeKind: target.compute,
     ...(options.since === undefined ? {} : { since: options.since }),
     ...(options.limit === undefined ? {} : { limit: options.limit }),
     ...(options.filterPattern === undefined ? {} : { filterPattern: options.filterPattern }),
@@ -173,6 +174,7 @@ export async function runGcpDrift(
   const plugin = await loadGcpPlugin(deps, options);
   const infraDir = path.resolve(deps.paths.root, plan.infra.dir);
 
+  const secretNames = plan.app.env.filter((e) => e.secret).map((e) => e.name);
   const expectedFiles = plugin.renderHcl({
     appName: plan.app.name,
     environment: deps.paths.environment,
@@ -182,6 +184,7 @@ export async function runGcpDrift(
     githubRepo: options.githubRepo,
     branch: plan.cicd.branch,
     containerPort: plan.app.port,
+    ...(secretNames.length > 0 ? { secretNames } : {}),
   });
 
   const driftedFiles: string[] = [];
@@ -217,6 +220,9 @@ export async function runGcpSnapshotList(
   return connector.listSnapshots({
     region: target.region,
     identifierPrefix: gcpDbInstanceName(plan.app.name, deps.paths.environment),
+    ...(target.components.database?.service === undefined
+      ? {}
+      : { service: target.components.database.service }),
   });
 }
 
@@ -249,10 +255,29 @@ export async function runGcpSnapshotTake(
   });
 }
 
+export function gcpStandingRestoreDrillHash(input: {
+  readonly app: string;
+  readonly environment: string;
+  readonly region: string;
+  readonly drillInstanceId: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        action: "gcp-restore-drill-standing",
+        app: input.app,
+        environment: input.environment,
+        region: input.region,
+        drillInstanceId: input.drillInstanceId,
+      }),
+    )
+    .digest("hex");
+}
+
 export async function runGcpRestoreDrill(
   deps: PhaseDeps,
   options: GcpPlanInput & {
-    readonly snapshotId: string;
+    readonly snapshotId?: string;
     readonly drillInstanceId?: string;
     readonly standingApprovalHash?: string;
   },
@@ -262,11 +287,59 @@ export async function runGcpRestoreDrill(
   const connector = resolveGcpConnector(plugin, deps, options);
   const dbComponent = target.components.database;
   const dbId = gcpDbInstanceName(plan.app.name, deps.paths.environment);
-  const drillInstanceId = options.drillInstanceId ?? `${dbId}-drill`;
+  const defaultDrillId = `${dbId}-drill`;
+  const drillInstanceId = options.drillInstanceId ?? defaultDrillId;
+
+  if (drillInstanceId === dbId || !drillInstanceId.endsWith("-drill")) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Refused GCP restore drill: drillInstanceId "${drillInstanceId}" must differ from source instance "${dbId}" and end with "-drill".`,
+    );
+  }
+
+  let snapshotId = options.snapshotId;
 
   if (options.standingApprovalHash !== undefined) {
-    await deps.approvals.assertApprovedRemoteExec(options.standingApprovalHash);
+    if (options.drillInstanceId !== undefined && options.drillInstanceId !== defaultDrillId) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `Scheduled standing restore drill cannot override drillInstanceId (expected "${defaultDrillId}").`,
+      );
+    }
+    const expectedHash = gcpStandingRestoreDrillHash({
+      app: plan.app.name,
+      environment: deps.paths.environment,
+      region: target.region,
+      drillInstanceId: defaultDrillId,
+    });
+    if (options.standingApprovalHash !== expectedHash) {
+      throw new OpsCrewError(
+        "PLAN_NOT_APPROVED",
+        "Standing restore-drill approval hash does not match this app, environment, region, and fixed throwaway drill instance (ADR 0034).",
+      );
+    }
+    await deps.approvals.assertApprovedRemoteExec(expectedHash);
+    // ADR 0034: scheduled standing drill always restores ONLY the latest snapshot.
+    const latestList = await connector.listSnapshots({
+      region: target.region,
+      identifierPrefix: dbId,
+      ...(dbComponent?.service === undefined ? {} : { service: dbComponent.service }),
+    });
+    const latest = latestList[0];
+    if (latest === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `No Cloud SQL backup found for ${dbId}; cannot run scheduled restore drill.`,
+      );
+    }
+    snapshotId = latest.id;
   } else {
+    if (!snapshotId) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "snapshotId is required for an interactive GCP restore drill.",
+      );
+    }
     const drillHash = createHash("sha256")
       .update(
         JSON.stringify({
@@ -274,15 +347,15 @@ export async function runGcpRestoreDrill(
           app: plan.app.name,
           environment: deps.paths.environment,
           region: target.region,
-          snapshotId: options.snapshotId,
+          snapshotId,
           drillInstanceId,
         }),
       )
       .digest("hex");
     const decision = await deps.approvals.request({
       kind: "remote-exec",
-      title: `Run isolated Cloud SQL restore drill for ${plan.app.name} (${options.snapshotId})`,
-      details: `Clones Cloud SQL backup ${options.snapshotId} into private throwaway instance ${drillInstanceId}, verifies RUNNABLE, and deletes it.`,
+      title: `Run isolated Cloud SQL restore drill for ${plan.app.name} (${snapshotId})`,
+      details: `Clones Cloud SQL backup ${snapshotId} into private throwaway instance ${drillInstanceId}, verifies RUNNABLE, and deletes it.`,
       planHash: drillHash,
     });
     if (!decision.approved) {
@@ -296,7 +369,7 @@ export async function runGcpRestoreDrill(
 
   return connector.runRestoreDrill({
     region: target.region,
-    snapshotId: options.snapshotId,
+    snapshotId,
     service: dbComponent?.service ?? "cloud-sql-postgres",
     drillInstanceId,
   });

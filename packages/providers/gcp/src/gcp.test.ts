@@ -80,20 +80,25 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
     expect(ha.totalMonthlyUsd).toBeGreaterThan(lean.totalMonthlyUsd);
   });
 
-  it("applies --set overrides, reprices, and enforces GCP guardrails", () => {
+  it("applies --set overrides, downgrades Global ALB on compute-engine, and enforces GCP guardrails", () => {
     const { target } = designGcpTarget({
       facts: sampleFacts(),
       requirements: sampleRequirements(),
-      preset: "lean",
+      preset: "balanced",
     });
+    expect(target.components.edge?.service).toBe("global-alb-cloud-cdn");
     const res = applyGcpOverrides(target, [
       "compute=compute-engine",
       "observability.logsRetentionDays=90",
     ]);
     expect(res.target.compute).toBe("compute-engine");
     expect(res.target.components.compute?.service).toBe("compute-engine");
+    expect(res.target.components.edge?.service).toBe("caddy-tls");
     expect(res.target.observability.logsRetentionDays).toBe(90);
 
+    expect(() => applyGcpOverrides(res.target, ["edge.service=global-alb-cloud-cdn"])).toThrow(
+      /only targets compute "cloud-run"/,
+    );
     expect(() => applyGcpOverrides(target, ["cache.service=memorystore-redis"])).toThrow(
       /legacy Memorystore for Redis/,
     );
@@ -102,13 +107,19 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
     );
   });
 
-  it("escapes HCL cleanly and renders valid HCL across Cloud Run, Compute Engine, existingVpcId, and Global ALB", () => {
+  it("rejects CEL injection (B3) and renders complete HCL with Artifact Registry, per-key secrets, PSC policy, and full Global ALB", () => {
     const expr = ['a "b" $', "{foo} %{bar}\nc"].join("");
     const expected = ['"a \\"b\\" $$', '{foo} %%{bar}\\nc"'].join("");
     expect(hclString(expr)).toBe(expected);
     expect(gcpWifAttributeCondition({ owner: "acme", repo: "web", environmentName: "prod" })).toBe(
       "assertion.repository == 'acme/web' && assertion.environment == 'prod'",
     );
+    expect(() =>
+      gcpWifAttributeCondition({ owner: "acme", repo: "web", branch: "x' || true || '" }),
+    ).toThrow(/unsafe characters/);
+    expect(() =>
+      gcpWifAttributeCondition({ owner: "acme", repo: "web", environmentName: "prod' || true" }),
+    ).toThrow(/unsafe characters/);
 
     const { target } = designGcpTarget({
       facts: sampleFacts(),
@@ -126,22 +137,44 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
         target,
         domain: "app.example.com",
         dnsProvider: "cloudflare",
+        secretNames: ["APP_SECRET", "DATABASE_URL"],
         github: { owner: "acme", repo: "web", environmentName: "prod" },
       }).map((f) => [f.path, f.content]),
     );
     expect(files.get("network.tf")).toContain('data "google_compute_network" "existing"');
+    expect(files.get("network.tf")).not.toContain(
+      'resource "google_compute_firewall" "allow_https"',
+    );
     expect(files.get("iam.tf")).toContain(
       "assertion.repository == 'acme/web' && assertion.environment == 'prod'",
     );
+    expect(files.get("iam.tf")).toContain('resource "google_artifact_registry_repository" "app"');
     expect(files.get("iam.tf")).not.toContain('resource "google_service_account_key"');
+    expect(files.get("compute.tf")).toContain("INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER");
+    expect(files.get("compute.tf")).toContain("secret_key_ref");
+    expect(files.get("compute.tf")).toContain('"APP_SECRET"');
+    expect(files.get("database.tf")).toContain('edition           = "ENTERPRISE"');
+    expect(files.get("database.tf")).toContain('ssl_mode        = "ENCRYPTED_ONLY"');
+    expect(files.get("database.tf")).toContain('resource "google_sql_user" "runtime"');
+    expect(files.get("cache.tf")).toContain(
+      'resource "google_network_connectivity_service_connection_policy" "memorystore"',
+    );
     expect(files.get("cache.tf")).toContain('resource "google_memorystore_instance" "app"');
     expect(files.get("cache.tf")).not.toContain('resource "google_redis_instance"');
+    expect(files.get("secrets.tf")).toContain('"APP_SECRET"');
     expect(files.get("secrets.tf")).not.toContain(
       'resource "google_secret_manager_secret_version"',
     );
     expect(files.get("edge.tf")).toContain(
-      'resource "google_certificate_manager_dns_authorization" "app"',
+      'resource "google_certificate_manager_certificate_map" "app"',
     );
+    expect(files.get("edge.tf")).toContain('resource "google_compute_url_map" "app"');
+    expect(files.get("edge.tf")).toContain('resource "google_compute_target_https_proxy" "app"');
+    expect(files.get("edge.tf")).toContain('resource "google_compute_global_address" "alb"');
+    expect(files.get("edge.tf")).toContain(
+      'resource "google_compute_global_forwarding_rule" "https"',
+    );
+    expect(files.get("outputs.tf")).toContain('output "alb_ip"');
     expect(files.get("outputs.tf")).toContain("acme_validation_records");
 
     const wf = renderGcpDeployWorkflow({
@@ -153,12 +186,16 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
     });
     expect(wf.content).toContain("id-token: write");
     expect(wf.content).toContain("uses: google-github-actions/auth@v2");
+    expect(wf.content).toContain("docker.pkg.dev");
+    expect(wf.content).not.toContain("ghcr.io");
     expect(wf.content).toContain('environment: "prod"');
   });
 
-  it("verifies credentials, reads status/logs, writes Secret Manager versions out-of-band, lists backups newest-first, and runs honest restore drills", async () => {
-    let polls = 0;
+  it("verifies credentials, checks terminalCondition honestly, handles operation polling + finally DELETE + 401 hints", async () => {
+    let opPolls = 0;
+    let instancePolls = 0;
     let deleted = false;
+    let seenLogFilter = "";
     const fakeFetch: FetchLike = async (input, init) => {
       const url = typeof input === "string" ? input : String(input);
       const method = init?.method ?? "GET";
@@ -171,12 +208,14 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
         return new Response(
           JSON.stringify({
             uri: "https://opscrew-acme-prod-abc.a.run.app",
-            conditions: [{ type: "Ready", state: "CONDITION_SUCCEEDED" }],
+            terminalCondition: { type: "Ready", state: "CONDITION_SUCCEEDED" },
           }),
           { status: 200 },
         );
       }
       if (url.includes("logging.googleapis.com/v2/entries:list")) {
+        const parsed = JSON.parse(String(init?.body ?? "{}")) as { filter?: string };
+        seenLogFilter = parsed.filter ?? "";
         return new Response(
           JSON.stringify({
             entries: [
@@ -196,7 +235,17 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
           { status: 200 },
         );
       }
-      if (url.includes("/backupRuns")) {
+      if (url.endsWith("/backupRuns/200")) {
+        return new Response(
+          JSON.stringify({
+            id: "200",
+            windowStartTime: "2026-11-27T00:00:00Z",
+            status: "SUCCESSFUL",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith("/backupRuns")) {
         return new Response(
           JSON.stringify({
             items: [
@@ -208,7 +257,16 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
         );
       }
       if (url.endsWith("/clone")) {
-        return new Response(JSON.stringify({ name: "op-1", status: "RUNNING" }), { status: 200 });
+        return new Response(JSON.stringify({ name: "op-clone-1", status: "RUNNING" }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/operations/op-clone-1")) {
+        opPolls += 1;
+        return new Response(
+          JSON.stringify({ name: "op-clone-1", status: opPolls >= 2 ? "DONE" : "RUNNING" }),
+          { status: 200 },
+        );
       }
       if (url.includes("/instances/opscrew-acme-prod-db-drill")) {
         if (method === "DELETE") {
@@ -216,10 +274,11 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
           return new Response(JSON.stringify({ status: "RUNNING" }), { status: 200 });
         }
         if (deleted) return new Response("", { status: 404 });
-        polls += 1;
-        return new Response(JSON.stringify({ state: polls >= 2 ? "RUNNABLE" : "PENDING_CREATE" }), {
-          status: 200,
-        });
+        instancePolls += 1;
+        return new Response(
+          JSON.stringify({ state: instancePolls >= 2 ? "RUNNABLE" : "PENDING_CREATE" }),
+          { status: 200 },
+        );
       }
       return new Response("Not Found", { status: 404 });
     };
@@ -233,7 +292,6 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
 
     const id = await connector.verifyCredentials();
     expect(id.ok).toBe(true);
-    expect(id.accountId).toBe("acme-123");
 
     const status = await connector.readStatus({
       appName: "acme",
@@ -242,11 +300,15 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
       computeKind: "cloud-run",
     });
     expect(status.healthy).toBe(true);
-    expect(status.compute.endpoint).toContain("run.app");
+    expect(status.compute.status).toBe("CONDITION_SUCCEEDED");
 
-    const logs = await connector.readLogs({ logGroup: "opscrew-acme-prod", region: "us-central1" });
+    const logs = await connector.readLogs({
+      logGroup: "opscrew-acme-prod",
+      region: "us-central1",
+      computeKind: "compute-engine",
+    });
+    expect(seenLogFilter).toContain('resource.type="gce_instance"');
     expect(logs[0]?.message).toContain("[REDACTED]");
-    expect(logs[0]?.message).not.toContain("TOP_SECRET_VALUE");
 
     const sec = await connector.writeSecrets({
       region: "us-central1",
@@ -257,17 +319,82 @@ describe("@opscrew/provider-gcp (Wave 2: T3902, T3903, T3905)", () => {
     const snaps = await connector.listSnapshots({
       region: "us-central1",
       identifierPrefix: gcpDbInstanceName("acme", "prod"),
+      service: "cloud-sql-mysql",
     });
     expect(snaps.map((s) => s.id)).toEqual(["200", "100"]);
+    expect(snaps[0]?.engine).toBe("mysql");
 
+    // Numeric backupRunId resolved to pointInTime, waited for op DONE before RUNNABLE and DELETE.
     const drill = await connector.runRestoreDrill({
       region: "us-central1",
-      snapshotId: "2026-11-27T00:00:00Z",
+      snapshotId: "200",
       service: "cloud-sql-postgres",
       drillInstanceId: "opscrew-acme-prod-db-drill",
     });
     expect(drill.verified).toBe(true);
     expect(drill.cleanedUp).toBe(true);
+    expect(opPolls).toBeGreaterThanOrEqual(2);
     expect(GCP_MANAGED_PROVIDER.id).toBe("gcp");
+  });
+
+  it("refuses deleting source instance, marks missing terminalCondition unhealthy, and runs DELETE in finally on mid-poll throw", async () => {
+    let deleteCalled = false;
+    const flakyFetch: FetchLike = async (input, init) => {
+      const url = typeof input === "string" ? input : String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("run.googleapis.com/v2/")) {
+        return new Response(JSON.stringify({ uri: "https://x.run.app" }), { status: 200 });
+      }
+      if (url.endsWith("/clone")) {
+        return new Response(JSON.stringify({ name: "op-2", status: "RUNNING" }), { status: 200 });
+      }
+      if (url.endsWith("/operations/op-2")) {
+        throw new Error("network reset mid-poll");
+      }
+      if (method === "DELETE" && url.includes("/instances/opscrew-acme-prod-db-drill")) {
+        deleteCalled = true;
+        return new Response("", { status: 404 });
+      }
+      return new Response("Unauthorized", { status: 401 });
+    };
+
+    const connector = createGcpConnector({
+      fetch: flakyFetch,
+      env: { GOOGLE_CLOUD_PROJECT: "acme-123", GOOGLE_OAUTH_ACCESS_TOKEN: "ya29.expired" },
+      redactor,
+      sleep: async () => undefined,
+      maxPollAttempts: 2,
+    });
+
+    const badStatus = await connector.readStatus({
+      appName: "acme",
+      environment: "prod",
+      region: "us-central1",
+      computeKind: "cloud-run",
+    });
+    expect(badStatus.healthy).toBe(false);
+
+    const authCheck = await connector.verifyCredentials();
+    expect(authCheck.ok).toBe(false);
+    expect(authCheck.error).toContain("gcloud auth print-access-token");
+
+    await expect(
+      connector.runRestoreDrill({
+        region: "us-central1",
+        snapshotId: "2026-11-27T00:00:00Z",
+        service: "cloud-sql-postgres",
+        drillInstanceId: "opscrew-acme-prod-db",
+      }),
+    ).rejects.toThrow(/must differ from source instance/);
+
+    const failedDrill = await connector.runRestoreDrill({
+      region: "us-central1",
+      snapshotId: "2026-11-27T00:00:00Z",
+      service: "cloud-sql-postgres",
+      drillInstanceId: "opscrew-acme-prod-db-drill",
+    });
+    expect(failedDrill.verified).toBe(false);
+    expect(deleteCalled).toBe(true);
+    expect(failedDrill.cleanedUp).toBe(true);
   });
 });

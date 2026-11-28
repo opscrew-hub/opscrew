@@ -9,6 +9,7 @@ export {
 export {
   type GcpAdviceItem,
   type GcpPlanInput,
+  gcpStandingRestoreDrillHash,
   planGcpRetarget,
   runGcpAdvise,
   runGcpDestroy,

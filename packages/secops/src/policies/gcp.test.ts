@@ -212,4 +212,81 @@ describe("039 GCP SecOps plan policies (T3904)", () => {
       results.filter((r) => !r.passed && r.policyId === "gcp-wif-strict-condition"),
     ).toHaveLength(2);
   });
+
+  it("blocks CEL bypasses (B2), omitted/unknown firewall source_ranges (M1), and escalation/public IAM grants (M2)", () => {
+    const planJson = makePlanJson([
+      {
+        address: "google_iam_workload_identity_pool_provider.neq",
+        type: "google_iam_workload_identity_pool_provider",
+        values: {
+          oidc: [{ issuer_uri: "https://token.actions.githubusercontent.com" }],
+          attribute_condition: "assertion.repository != 'x' && assertion.ref != ''",
+        },
+      },
+      {
+        address: "google_iam_workload_identity_pool_provider.or_bypass",
+        type: "google_iam_workload_identity_pool_provider",
+        values: {
+          oidc: [{ issuer_uri: "https://token.actions.githubusercontent.com" }],
+          attribute_condition:
+            "assertion.repository == 'acme/web' && assertion.environment == 'prod' || true",
+        },
+      },
+      {
+        address: "google_iam_workload_identity_pool_provider.startswith",
+        type: "google_iam_workload_identity_pool_provider",
+        values: {
+          oidc: [{ issuer_uri: "https://token.actions.githubusercontent.com" }],
+          attribute_condition:
+            "assertion.repository.startsWith('acme/') && assertion.environment == 'prod'",
+        },
+      },
+      {
+        address: "google_compute_firewall.omitted_ranges",
+        type: "google_compute_firewall",
+        values: {
+          direction: "INGRESS",
+          allow: [{ protocol: "tcp", ports: ["22"] }],
+        },
+      },
+      {
+        address: "google_compute_firewall.unknown_ranges",
+        type: "google_compute_firewall",
+        values: { direction: "INGRESS", allow: [{ protocol: "tcp", ports: ["443"] }] },
+        afterUnknown: { source_ranges: true },
+      },
+      {
+        address: "google_project_iam_member.token_creator",
+        type: "google_project_iam_member",
+        values: { role: "roles/iam.serviceAccountTokenCreator" },
+      },
+      {
+        address: "google_project_iam_member.project_sa_user",
+        type: "google_project_iam_member",
+        values: { role: "roles/iam.serviceAccountUser" },
+      },
+      {
+        address: "google_project_iam_policy.replace_all",
+        type: "google_project_iam_policy",
+        values: { policy_data: "{}" },
+      },
+      {
+        address: "google_storage_bucket_iam_member.public_bucket",
+        type: "google_storage_bucket_iam_member",
+        values: { role: "roles/storage.objectViewer", member: "allUsers" },
+      },
+      {
+        address: "google_secret_manager_secret_iam_binding.public_secret",
+        type: "google_secret_manager_secret_iam_binding",
+        values: { role: "roles/secretmanager.secretAccessor", members: ["allAuthenticatedUsers"] },
+      },
+    ]);
+
+    const results = evaluatePlanPolicies(planJson, gcpPlan());
+    const failedByPolicy = (id: string) => results.filter((r) => !r.passed && r.policyId === id);
+
+    expect(failedByPolicy("gcp-wif-strict-condition")).toHaveLength(3);
+    expect(failedByPolicy("gcp-firewall-no-open-sensitive-ports")).toHaveLength(2);
+    expect(failedByPolicy("gcp-iam-least-privilege")).toHaveLength(5);
+  });
 });

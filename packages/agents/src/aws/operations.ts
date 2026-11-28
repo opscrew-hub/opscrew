@@ -286,10 +286,29 @@ export async function runAwsSnapshotTake(
  * `ApprovalGate`: either a fresh per-run approval or a pre-installed scheduled standing approval
  * verified by `standingApprovalHash`.
  */
+export function awsStandingRestoreDrillHash(input: {
+  readonly app: string;
+  readonly environment: string;
+  readonly region: string;
+  readonly drillInstanceId: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        action: "aws-restore-drill-standing",
+        app: input.app,
+        environment: input.environment,
+        region: input.region,
+        drillInstanceId: input.drillInstanceId,
+      }),
+    )
+    .digest("hex");
+}
+
 export async function runAwsRestoreDrill(
   deps: PhaseDeps,
   options: AwsPlanInput & {
-    readonly snapshotId: string;
+    readonly snapshotId?: string;
     readonly drillInstanceId?: string;
     readonly dbSubnetGroupName?: string;
     readonly vpcSecurityGroupIds?: readonly string[];
@@ -301,12 +320,58 @@ export async function runAwsRestoreDrill(
   const connector = resolveAwsConnector(plugin, deps, options);
   const dbComponent = target.components.database;
   const dbId = awsDbIdentifier(plan.app.name, deps.paths.environment);
-  const drillInstanceId = options.drillInstanceId ?? `${dbId}-drill`;
+  const defaultDrillId = `${dbId}-drill`;
+  const drillInstanceId = options.drillInstanceId ?? defaultDrillId;
   const dbSubnetGroupName = options.dbSubnetGroupName ?? `${dbId}-db`;
 
+  if (drillInstanceId === dbId || !drillInstanceId.endsWith("-drill")) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Refused AWS restore drill: drillInstanceId "${drillInstanceId}" must differ from source instance "${dbId}" and end with "-drill".`,
+    );
+  }
+
+  let snapshotId = options.snapshotId;
+
   if (options.standingApprovalHash !== undefined) {
-    await deps.approvals.assertApprovedRemoteExec(options.standingApprovalHash);
+    if (options.drillInstanceId !== undefined && options.drillInstanceId !== defaultDrillId) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `Scheduled standing restore drill cannot override drillInstanceId (expected "${defaultDrillId}").`,
+      );
+    }
+    const expectedHash = awsStandingRestoreDrillHash({
+      app: plan.app.name,
+      environment: deps.paths.environment,
+      region: target.region,
+      drillInstanceId: defaultDrillId,
+    });
+    if (options.standingApprovalHash !== expectedHash) {
+      throw new OpsCrewError(
+        "PLAN_NOT_APPROVED",
+        "Standing restore-drill approval hash does not match this app, environment, region, and fixed throwaway drill instance (ADR 0034).",
+      );
+    }
+    await deps.approvals.assertApprovedRemoteExec(expectedHash);
+    const latestList = await connector.listSnapshots({
+      region: target.region,
+      identifierPrefix: dbId,
+    });
+    const latest = latestList[0];
+    if (latest === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `No RDS snapshot found for ${dbId}; cannot run scheduled restore drill.`,
+      );
+    }
+    snapshotId = latest.id;
   } else {
+    if (!snapshotId) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "snapshotId is required for an interactive AWS restore drill.",
+      );
+    }
     const drillHash = createHash("sha256")
       .update(
         JSON.stringify({
@@ -314,7 +379,7 @@ export async function runAwsRestoreDrill(
           app: plan.app.name,
           environment: deps.paths.environment,
           region: target.region,
-          snapshotId: options.snapshotId,
+          snapshotId,
           drillInstanceId,
           dbSubnetGroupName,
         }),
@@ -322,8 +387,8 @@ export async function runAwsRestoreDrill(
       .digest("hex");
     const decision = await deps.approvals.request({
       kind: "remote-exec",
-      title: `Run isolated RDS restore drill for ${plan.app.name} (${options.snapshotId})`,
-      details: `Restores snapshot ${options.snapshotId} into private throwaway RDS instance ${drillInstanceId} (PubliclyAccessible=false, subnet group ${dbSubnetGroupName}), verifies it becomes available, and deletes it.`,
+      title: `Run isolated RDS restore drill for ${plan.app.name} (${snapshotId})`,
+      details: `Restores snapshot ${snapshotId} into private throwaway RDS instance ${drillInstanceId} (PubliclyAccessible=false, subnet group ${dbSubnetGroupName}), verifies it becomes available, and deletes it.`,
       planHash: drillHash,
     });
     if (!decision.approved) {
@@ -337,7 +402,7 @@ export async function runAwsRestoreDrill(
 
   return connector.runRestoreDrill({
     region: target.region,
-    snapshotId: options.snapshotId,
+    snapshotId,
     service: dbComponent?.service ?? "rds-postgres",
     drillInstanceId,
     dbSubnetGroupName,

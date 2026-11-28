@@ -28,6 +28,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseDeps } from "../context";
 import {
+  gcpStandingRestoreDrillHash,
   planGcpRetarget,
   runGcpAdvise,
   runGcpDesign,
@@ -517,6 +518,91 @@ describe("GCP core phase orchestration (Feature 039 T3906)", () => {
       }),
     ).rejects.toThrow(OpsCrewError);
     expect(badEngine.applied).toBe(false);
+  });
+
+  it("enforces ADR 0034 standing-approval hash binding and rejects drill overrides (B1)", async () => {
+    const { deps } = await createTestDeps();
+    const designed = await runGcpDesign(deps, {
+      optionId: "gcp-balanced",
+      allowWorkspaceFallback: true,
+    });
+    const connector = fakeConnector();
+
+    // Wrong standing hash rejected before touching connector.
+    await expect(
+      runGcpRestoreDrill(deps, {
+        plan: designed.plan,
+        connector,
+        standingApprovalHash: "a".repeat(64),
+        allowWorkspaceFallback: true,
+      }),
+    ).rejects.toThrow(/does not match/);
+
+    // Custom drillInstanceId rejected in standing mode.
+    const validStandingHash = gcpStandingRestoreDrillHash({
+      app: designed.plan.app.name,
+      environment: deps.paths.environment,
+      region: designed.target.region,
+      drillInstanceId: "opscrew-shop-api-prod-db-drill",
+    });
+    await expect(
+      runGcpRestoreDrill(deps, {
+        plan: designed.plan,
+        connector,
+        drillInstanceId: "opscrew-shop-api-prod-db-custom-drill",
+        standingApprovalHash: validStandingHash,
+        allowWorkspaceFallback: true,
+      }),
+    ).rejects.toThrow(/cannot override drillInstanceId/);
+
+    // Valid pre-approved standing hash resolves latest snapshot automatically.
+    await deps.approvals.request({
+      kind: "remote-exec",
+      title: "Install standing GCP restore drill",
+      details: "ADR 0034 standing drill",
+      planHash: validStandingHash,
+    });
+    const drill = await runGcpRestoreDrill(deps, {
+      plan: designed.plan,
+      connector,
+      standingApprovalHash: validStandingHash,
+      allowWorkspaceFallback: true,
+    });
+    expect(drill.verified).toBe(true);
+    expect(drill.snapshotId).toBe("1732752000000");
+  });
+
+  it("reports pending ACME records honestly when Cloudflare writer is omitted (B4)", async () => {
+    const { deps } = await createTestDeps();
+    const designed = await runGcpDesign(deps, {
+      optionId: "gcp-balanced",
+      allowWorkspaceFallback: true,
+    });
+    const engine = fakeEngine({
+      outputs: {
+        acme_validation_records: [
+          {
+            name: "_acme-challenge.shop.example.com",
+            value: "token.authorize.certificatemanager.goog.",
+          },
+        ],
+      },
+    });
+    const result = await runGcpProvision(deps, {
+      plan: designed.plan,
+      engine,
+      githubRepo: "acme/shop",
+      connector: fakeConnector(),
+      allowWorkspaceFallback: true,
+    });
+    expect(result.acmeRecordsWired).toEqual([]);
+    expect(result.acmeRecordsPending).toEqual([
+      {
+        name: "_acme-challenge.shop.example.com",
+        content: "token.authorize.certificatemanager.goog.",
+        proxied: false,
+      },
+    ]);
   });
 
   it("rejects malformed GCP plugin missing required render/design hooks", async () => {

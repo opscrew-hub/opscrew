@@ -185,7 +185,12 @@ export const GcpTargetSchema = z
 
     const edge = target.components.edge;
     if (edge !== undefined && GLOBAL_ALB_RE.test(edge.service)) {
-      if (target.pins.noGlobalAlb === true) {
+      if (target.compute === "compute-engine") {
+        issue(
+          ["components", "edge", "service"],
+          'Global External ALB serverless NEG only targets compute "cloud-run"; use compute "cloud-run" or remove global-alb-cloud-cdn for Compute Engine',
+        );
+      } else if (target.pins.noGlobalAlb === true) {
         issue(
           ["components", "edge", "service"],
           "conflicts with pins.noGlobalAlb: remove pins.noGlobalAlb or keep built-in *.run.app / Cloudflare edge",

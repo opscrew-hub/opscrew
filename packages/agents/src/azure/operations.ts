@@ -265,10 +265,29 @@ export async function runAzureSnapshotTake(
  * Always enforces SHA-256 plan-hash approval via `ApprovalGate`: either a fresh per-run approval
  * or a pre-installed scheduled standing approval verified by `standingApprovalHash`.
  */
+export function azureStandingRestoreDrillHash(input: {
+  readonly app: string;
+  readonly environment: string;
+  readonly region: string;
+  readonly drillInstanceId: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        action: "azure-restore-drill-standing",
+        app: input.app,
+        environment: input.environment,
+        region: input.region,
+        drillInstanceId: input.drillInstanceId,
+      }),
+    )
+    .digest("hex");
+}
+
 export async function runAzureRestoreDrill(
   deps: PhaseDeps,
   options: AzurePlanInput & {
-    readonly snapshotId: string;
+    readonly snapshotId?: string;
     readonly drillInstanceId?: string;
     readonly delegatedSubnetId?: string;
     readonly standingApprovalHash?: string;
@@ -279,11 +298,57 @@ export async function runAzureRestoreDrill(
   const connector = resolveAzureConnector(plugin, deps, options);
   const dbComponent = target.components.database;
   const dbId = azureDbServerName(plan.app.name, deps.paths.environment);
-  const drillInstanceId = options.drillInstanceId ?? `${dbId}-drill`;
+  const defaultDrillId = `${dbId}-drill`;
+  const drillInstanceId = options.drillInstanceId ?? defaultDrillId;
+
+  if (drillInstanceId === dbId || !drillInstanceId.endsWith("-drill")) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Refused Azure restore drill: drillInstanceId "${drillInstanceId}" must differ from source server "${dbId}" and end with "-drill".`,
+    );
+  }
+
+  let snapshotId = options.snapshotId;
 
   if (options.standingApprovalHash !== undefined) {
-    await deps.approvals.assertApprovedRemoteExec(options.standingApprovalHash);
+    if (options.drillInstanceId !== undefined && options.drillInstanceId !== defaultDrillId) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `Scheduled standing restore drill cannot override drillInstanceId (expected "${defaultDrillId}").`,
+      );
+    }
+    const expectedHash = azureStandingRestoreDrillHash({
+      app: plan.app.name,
+      environment: deps.paths.environment,
+      region: target.region,
+      drillInstanceId: defaultDrillId,
+    });
+    if (options.standingApprovalHash !== expectedHash) {
+      throw new OpsCrewError(
+        "PLAN_NOT_APPROVED",
+        "Standing restore-drill approval hash does not match this app, environment, region, and fixed throwaway drill server (ADR 0034).",
+      );
+    }
+    await deps.approvals.assertApprovedRemoteExec(expectedHash);
+    const latestList = await connector.listSnapshots({
+      region: target.region,
+      identifierPrefix: dbId,
+    });
+    const latest = latestList[0];
+    if (latest === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `No Azure Flexible Server backup found for ${dbId}; cannot run scheduled restore drill.`,
+      );
+    }
+    snapshotId = latest.createdAt;
   } else {
+    if (!snapshotId) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "snapshotId is required for an interactive Azure restore drill.",
+      );
+    }
     const drillHash = createHash("sha256")
       .update(
         JSON.stringify({
@@ -291,7 +356,7 @@ export async function runAzureRestoreDrill(
           app: plan.app.name,
           environment: deps.paths.environment,
           region: target.region,
-          snapshotId: options.snapshotId,
+          snapshotId,
           drillInstanceId,
           delegatedSubnetId: options.delegatedSubnetId ?? null,
         }),
@@ -299,8 +364,8 @@ export async function runAzureRestoreDrill(
       .digest("hex");
     const decision = await deps.approvals.request({
       kind: "remote-exec",
-      title: `Run isolated Azure PITR restore drill for ${plan.app.name} (${options.snapshotId})`,
-      details: `Restores point-in-time backup ${options.snapshotId} into private throwaway Flexible Server ${drillInstanceId} (publicNetworkAccess=Disabled), verifies Ready, and deletes it.`,
+      title: `Run isolated Azure PITR restore drill for ${plan.app.name} (${snapshotId})`,
+      details: `Restores point-in-time backup ${snapshotId} into private throwaway Flexible Server ${drillInstanceId} (publicNetworkAccess=Disabled), verifies Ready, and deletes it.`,
       planHash: drillHash,
     });
     if (!decision.approved) {
@@ -314,7 +379,7 @@ export async function runAzureRestoreDrill(
 
   return connector.runRestoreDrill({
     region: target.region,
-    snapshotId: options.snapshotId,
+    snapshotId,
     service: dbComponent?.service ?? "flexible-postgres",
     drillInstanceId,
     ...(options.delegatedSubnetId === undefined

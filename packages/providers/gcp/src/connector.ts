@@ -3,8 +3,9 @@
  *
  * Zero `@google-cloud/*` SDK dependencies and zero runtime `@opscrew/*` imports.
  * Uses `GOOGLE_OAUTH_ACCESS_TOKEN` / `GCP_ACCESS_TOKEN` + `GOOGLE_CLOUD_PROJECT` / `GCP_PROJECT_ID`
- * through injected `deps.fetch`, redacts every error/log line via `deps.redactor.redact()`, writes
- * Secret Manager versions out-of-band (never `.tfstate`), and polls Cloud SQL restore drills cleanly.
+ * through injected `deps.fetch` with per-request timeouts, redacts every error/log line via
+ * `deps.redactor.redact()`, writes Secret Manager versions out-of-band (never `.tfstate`), and
+ * runs honest, operation-polled Cloud SQL restore drills with `try/finally` cleanup guarantees.
  */
 import { createHash } from "node:crypto";
 import type {
@@ -80,12 +81,22 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function authExpiryHint(status: number): string {
+  return status === 401
+    ? " Access token may have expired (1h TTL); re-run `export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)`."
+    : "";
+}
+
 const DEFAULT_SLEEP = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const REQUEST_TIMEOUT_MS = 30_000;
+const DRILL_POLL_INTERVAL_MS = 15_000;
+/** Default 180 polls x 15s = 45 minutes (covers realistic 10-30 min Cloud SQL clones). */
+const DEFAULT_MAX_DRILL_POLLS = 180;
 
 export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedCloudConnector {
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? DEFAULT_SLEEP;
-  const maxPolls = deps.maxPollAttempts ?? 60;
+  const maxPolls = deps.maxPollAttempts ?? DEFAULT_MAX_DRILL_POLLS;
 
   async function gcpFetch(
     method: "GET" | "POST" | "PUT" | "DELETE",
@@ -101,6 +112,7 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
         ...(payload === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const text = await res.text();
     let json: unknown;
@@ -123,7 +135,7 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
           return {
             ok: false,
             error: deps.redactor.redact(
-              `GCP project verification failed (HTTP ${res.status}): ${res.text.slice(0, 200)}`,
+              `GCP project verification failed (HTTP ${res.status}): ${res.text.slice(0, 200)}${authExpiryHint(res.status)}`,
             ),
           };
         }
@@ -175,19 +187,18 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
         `https://run.googleapis.com/v2/projects/{projectId}/locations/${encodeURIComponent(input.region)}/services/${encodeURIComponent(name)}`,
       );
       const uri = isObject(res.json) && typeof res.json.uri === "string" ? res.json.uri : undefined;
-      const conds =
-        isObject(res.json) && Array.isArray(res.json.conditions) ? res.json.conditions : [];
-      const ready = conds.find((c) => isObject(c) && c.type === "Ready") as
-        | Record<string, unknown>
-        | undefined;
+      const terminal =
+        isObject(res.json) && isObject(res.json.terminalCondition)
+          ? res.json.terminalCondition
+          : undefined;
       const status =
-        typeof ready?.state === "string"
-          ? ready.state
+        typeof terminal?.state === "string"
+          ? terminal.state
           : res.status >= 200 && res.status < 300
-            ? "CONDITION_SUCCEEDED"
+            ? "UNKNOWN"
             : `HTTP ${res.status}`;
       return {
-        healthy: res.status >= 200 && res.status < 300 && /SUCCEEDED|READY/i.test(status),
+        healthy: res.status >= 200 && res.status < 300 && status === "CONDITION_SUCCEEDED",
         region: input.region,
         accountId: res.projectId,
         compute: {
@@ -203,8 +214,12 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
     async readLogs(input): Promise<readonly ManagedCloudLogLine[]> {
       const creds = readCredentials(deps.env);
       const limit = Math.max(1, Math.min(input.limit ?? 100, 1000));
+      const resourceFilter =
+        input.computeKind === "compute-engine"
+          ? `resource.type="gce_instance" AND labels."compute.googleapis.com/resource_name"=${JSON.stringify(input.logGroup)}`
+          : `resource.type="cloud_run_revision" AND resource.labels.service_name=${JSON.stringify(input.logGroup)}`;
       const parts = [
-        `resource.labels.service_name=${JSON.stringify(input.logGroup)}`,
+        resourceFilter,
         ...(input.since ? [`timestamp>=${JSON.stringify(input.since.toISOString())}`] : []),
         ...(input.filterPattern ? [input.filterPattern] : []),
       ];
@@ -218,7 +233,7 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
         throw new GcpProviderError(
           "COMMAND_FAILED",
           deps.redactor.redact(
-            `Cloud Logging query failed (HTTP ${res.status}): ${res.text.slice(0, 200)}`,
+            `Cloud Logging query failed (HTTP ${res.status}): ${res.text.slice(0, 200)}${authExpiryHint(res.status)}`,
           ),
         );
       }
@@ -264,7 +279,7 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
           throw new GcpProviderError(
             "COMMAND_FAILED",
             deps.redactor.redact(
-              `Failed to add Secret Manager version for "${item.secretId}" (HTTP ${res.status}): ${res.text.slice(0, 200)}`,
+              `Failed to add Secret Manager version for "${item.secretId}" (HTTP ${res.status}): ${res.text.slice(0, 200)}${authExpiryHint(res.status)}`,
             ),
           );
         }
@@ -282,15 +297,17 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
         throw new GcpProviderError(
           "COMMAND_FAILED",
           deps.redactor.redact(
-            `Failed to list Cloud SQL backup runs (HTTP ${res.status}): ${res.text.slice(0, 200)}`,
+            `Failed to list Cloud SQL backup runs (HTTP ${res.status}): ${res.text.slice(0, 200)}${authExpiryHint(res.status)}`,
           ),
         );
       }
+      const dbService = input.service ?? "cloud-sql-postgres";
+      const engine = dbService.includes("mysql") ? "mysql" : "postgres";
       const items = isObject(res.json) && Array.isArray(res.json.items) ? res.json.items : [];
       const snapshots: ManagedCloudSnapshotEntry[] = items.filter(isObject).map((item) => ({
         id: String(item.id ?? "unknown"),
-        service: deps.env.GCP_DB_SERVICE ?? "cloud-sql-postgres",
-        engine: (deps.env.GCP_DB_SERVICE ?? "postgres").includes("mysql") ? "mysql" : "postgres",
+        service: dbService,
+        engine,
         createdAt:
           typeof item.windowStartTime === "string"
             ? item.windowStartTime
@@ -312,7 +329,7 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
         throw new GcpProviderError(
           "COMMAND_FAILED",
           deps.redactor.redact(
-            `Failed to trigger Cloud SQL backup "${input.snapshotId}" (HTTP ${res.status}): ${res.text.slice(0, 200)}`,
+            `Failed to trigger Cloud SQL backup "${input.snapshotId}" (HTTP ${res.status}): ${res.text.slice(0, 200)}${authExpiryHint(res.status)}`,
           ),
         );
       }
@@ -329,13 +346,60 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
       const started = now().getTime();
       const sourceInstance =
         deps.env.GCP_DB_INSTANCE ?? input.drillInstanceId.replace(/-drill$/, "");
+      if (input.drillInstanceId === sourceInstance || !input.drillInstanceId.endsWith("-drill")) {
+        throw new GcpProviderError(
+          "INVALID_INPUT",
+          `Refused restore drill: throwaway drillInstanceId "${input.drillInstanceId}" must differ from source instance "${sourceInstance}" and end with "-drill".`,
+        );
+      }
+
+      // Resolve backupRunId -> exact ISO pointInTime so the drill clones the backup, not live HEAD.
+      let pointInTime: string | undefined;
+      if (/^\d{4}-\d{2}-\d{2}T/.test(input.snapshotId)) {
+        pointInTime = input.snapshotId;
+      } else {
+        const bkpRes = await gcpFetch(
+          "GET",
+          `https://sqladmin.googleapis.com/v1/projects/{projectId}/instances/${encodeURIComponent(sourceInstance)}/backupRuns/${encodeURIComponent(input.snapshotId)}`,
+        );
+        if (bkpRes.status < 200 || bkpRes.status >= 300 || !isObject(bkpRes.json)) {
+          return {
+            snapshotId: input.snapshotId,
+            service: input.service,
+            verified: false,
+            durationMs: Math.max(0, now().getTime() - started),
+            cleanedUp: true,
+            detail: deps.redactor.redact(
+              `Could not resolve Cloud SQL backup run "${input.snapshotId}" to a point-in-time timestamp (HTTP ${bkpRes.status})${authExpiryHint(bkpRes.status)}.`,
+            ),
+          };
+        }
+        const ts =
+          typeof bkpRes.json.endTime === "string"
+            ? bkpRes.json.endTime
+            : typeof bkpRes.json.windowStartTime === "string"
+              ? bkpRes.json.windowStartTime
+              : undefined;
+        if (ts === undefined) {
+          return {
+            snapshotId: input.snapshotId,
+            service: input.service,
+            verified: false,
+            durationMs: Math.max(0, now().getTime() - started),
+            cleanedUp: true,
+            detail: `Cloud SQL backup run "${input.snapshotId}" has no endTime or windowStartTime; refusing to clone current HEAD instead of the backup.`,
+          };
+        }
+        pointInTime = ts;
+      }
+
       const cloneUrl = `https://sqladmin.googleapis.com/v1/projects/{projectId}/instances/${encodeURIComponent(sourceInstance)}/clone`;
       const drillUrl = `https://sqladmin.googleapis.com/v1/projects/{projectId}/instances/${encodeURIComponent(input.drillInstanceId)}`;
 
       const createRes = await gcpFetch("POST", cloneUrl, {
         cloneContext: {
           destinationInstanceName: input.drillInstanceId,
-          ...(input.snapshotId.includes("T") ? { pointInTime: input.snapshotId } : {}),
+          pointInTime,
         },
       });
       if (createRes.status < 200 || createRes.status >= 300) {
@@ -344,34 +408,82 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
           service: input.service,
           verified: false,
           durationMs: Math.max(0, now().getTime() - started),
-          cleanedUp: false,
+          cleanedUp: true,
           detail: deps.redactor.redact(
-            `Cloud SQL restore drill clone failed (HTTP ${createRes.status}): ${createRes.text.slice(0, 200)}`,
+            `Cloud SQL restore drill clone failed (HTTP ${createRes.status}): ${createRes.text.slice(0, 200)}${authExpiryHint(createRes.status)}`,
           ),
         };
       }
 
-      let verified = false;
-      for (let attempt = 0; attempt < maxPolls; attempt++) {
-        const poll = await gcpFetch("GET", drillUrl);
-        const state = isObject(poll.json) ? String(poll.json.state ?? "") : "";
-        if (poll.status >= 200 && poll.status < 300 && state === "RUNNABLE") {
-          verified = true;
-          break;
-        }
-        await sleep(5_000);
-      }
+      const opName =
+        isObject(createRes.json) && typeof createRes.json.name === "string"
+          ? createRes.json.name
+          : undefined;
 
-      const deleteRes = await gcpFetch("DELETE", drillUrl);
-      let cleanedUp = deleteRes.status === 404;
-      if (deleteRes.status >= 200 && deleteRes.status < 300) {
-        for (let attempt = 0; attempt < maxPolls; attempt++) {
-          const check = await gcpFetch("GET", drillUrl);
-          if (check.status === 404) {
-            cleanedUp = true;
-            break;
+      let verified = false;
+      let cleanedUp = false;
+      let deleteStatus = 0;
+      let pollError: string | undefined;
+
+      try {
+        // 1. Wait for the clone operation to reach DONE before checking instance or issuing DELETE (prevents HTTP 409).
+        if (opName !== undefined) {
+          const opUrl = `https://sqladmin.googleapis.com/v1/projects/{projectId}/operations/${encodeURIComponent(opName)}`;
+          for (let attempt = 0; attempt < maxPolls; attempt++) {
+            const opRes = await gcpFetch("GET", opUrl);
+            if (opRes.status === 401) {
+              pollError = `Operation poll failed with HTTP 401.${authExpiryHint(401)}`;
+              break;
+            }
+            const opStatus = isObject(opRes.json) ? String(opRes.json.status ?? "") : "";
+            if (opRes.status >= 200 && opRes.status < 300 && opStatus === "DONE") {
+              if (isObject(opRes.json) && opRes.json.error !== undefined) {
+                pollError = `Clone operation failed: ${JSON.stringify(opRes.json.error).slice(0, 200)}`;
+              }
+              break;
+            }
+            await sleep(DRILL_POLL_INTERVAL_MS);
           }
-          await sleep(5_000);
+        }
+
+        // 2. Verify throwaway clone instance reaches RUNNABLE.
+        if (pollError === undefined) {
+          for (let attempt = 0; attempt < maxPolls; attempt++) {
+            const poll = await gcpFetch("GET", drillUrl);
+            if (poll.status === 401) {
+              pollError = `Instance poll failed with HTTP 401.${authExpiryHint(401)}`;
+              break;
+            }
+            const state = isObject(poll.json) ? String(poll.json.state ?? "") : "";
+            if (poll.status >= 200 && poll.status < 300 && state === "RUNNABLE") {
+              verified = true;
+              break;
+            }
+            await sleep(DRILL_POLL_INTERVAL_MS);
+          }
+        }
+      } catch (err) {
+        pollError = err instanceof Error ? err.message : String(err);
+      } finally {
+        // Always attempt cleanup of the throwaway drill instance even if polling threw or returned 401.
+        try {
+          const deleteRes = await gcpFetch("DELETE", drillUrl);
+          deleteStatus = deleteRes.status;
+          cleanedUp = deleteRes.status === 404;
+          if (deleteRes.status >= 200 && deleteRes.status < 300) {
+            for (let attempt = 0; attempt < maxPolls; attempt++) {
+              const check = await gcpFetch("GET", drillUrl);
+              if (check.status === 404) {
+                cleanedUp = true;
+                break;
+              }
+              await sleep(DRILL_POLL_INTERVAL_MS);
+            }
+          }
+        } catch (cleanupErr) {
+          cleanedUp = false;
+          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+          pollError = pollError ? `${pollError}; cleanup failed: ${msg}` : `cleanup failed: ${msg}`;
         }
       }
 
@@ -381,11 +493,13 @@ export function createGcpConnector(deps: ManagedCloudConnectorDeps): ManagedClou
         verified,
         durationMs: Math.max(0, now().getTime() - started),
         cleanedUp,
-        detail: verified
-          ? cleanedUp
-            ? `Cloned private throwaway Cloud SQL instance ${input.drillInstanceId}, verified RUNNABLE, and confirmed deleted.`
-            : `Cloned and verified ${input.drillInstanceId}, but deletion was not yet confirmed (DELETE HTTP ${deleteRes.status}).`
-          : `Throwaway Cloud SQL clone ${input.drillInstanceId} did not reach RUNNABLE within ${maxPolls} polls (DELETE HTTP ${deleteRes.status}, cleanedUp=${String(cleanedUp)}).`,
+        detail: deps.redactor.redact(
+          verified
+            ? cleanedUp
+              ? `Cloned private throwaway Cloud SQL instance ${input.drillInstanceId} at ${pointInTime}, verified RUNNABLE, and confirmed deleted.`
+              : `Cloned and verified ${input.drillInstanceId} at ${pointInTime}, but deletion was not confirmed (DELETE HTTP ${deleteStatus}).`
+            : `Throwaway Cloud SQL clone ${input.drillInstanceId} did not reach RUNNABLE (${pollError ?? `timed out after ${maxPolls} polls`}; DELETE HTTP ${deleteStatus}, cleanedUp=${String(cleanedUp)}).`,
+        ),
       };
     },
   };

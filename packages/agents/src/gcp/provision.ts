@@ -57,6 +57,11 @@ export interface GcpProvisionResult {
     readonly content: string;
     readonly proxied: false;
   }[];
+  readonly acmeRecordsPending: readonly {
+    readonly name: string;
+    readonly content: string;
+    readonly proxied: false;
+  }[];
 }
 
 function safeRepoPath(root: string, rel: string): string {
@@ -119,6 +124,13 @@ export async function runGcpProvision(
     );
   }
 
+  const declaredSecretNames = Array.from(
+    new Set([
+      ...plan.app.env.filter((e) => e.secret).map((e) => e.name),
+      ...(options.secrets ?? []).map((s) => s.name),
+    ]),
+  );
+
   const hclFiles = plugin.renderHcl({
     appName: plan.app.name,
     environment: deps.paths.environment,
@@ -128,6 +140,7 @@ export async function runGcpProvision(
     githubRepo: options.githubRepo,
     branch: plan.cicd.branch,
     containerPort: plan.app.port,
+    ...(declaredSecretNames.length > 0 ? { secretNames: declaredSecretNames } : {}),
   });
 
   const workflowFile = plugin.renderWorkflow({
@@ -199,6 +212,7 @@ export async function runGcpProvision(
       applied: false,
       writtenSecretNames: [],
       acmeRecordsWired: [],
+      acmeRecordsPending: [],
     };
   }
 
@@ -253,13 +267,15 @@ export async function runGcpProvision(
   }
 
   const acmeRecordsWired: Array<{ name: string; content: string; proxied: false }> = [];
+  const acmeRecordsPending: Array<{ name: string; content: string; proxied: false }> = [];
+  const records = extractAcmeValidationRecords(applyResult.outputs);
   if (
+    records.length > 0 &&
     target.pins.keepCloudflareDns !== false &&
     plan.dns.provider === "cloudflare" &&
     plan.dns.domain !== undefined &&
     options.cloudflare !== undefined
   ) {
-    const records = extractAcmeValidationRecords(applyResult.outputs);
     for (const rec of records) {
       await options.cloudflare.upsertDnsRecord({
         domain: plan.dns.domain,
@@ -270,6 +286,13 @@ export async function runGcpProvision(
       });
       acmeRecordsWired.push({ name: rec.name, content: rec.value, proxied: false });
     }
+  } else if (records.length > 0) {
+    for (const rec of records) {
+      acmeRecordsPending.push({ name: rec.name, content: rec.value, proxied: false });
+    }
+    deps.reporter.warn(
+      `Certificate Manager DNS-01 CNAME record(s) must be added by hand as DNS-only (proxied = false): ${records.map((r) => `${r.name} -> ${r.value}`).join(", ")}`,
+    );
   }
 
   deps.reporter.success(
@@ -285,5 +308,6 @@ export async function runGcpProvision(
     applyResult,
     writtenSecretNames,
     acmeRecordsWired,
+    acmeRecordsPending,
   };
 }

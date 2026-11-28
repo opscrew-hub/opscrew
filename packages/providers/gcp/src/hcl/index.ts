@@ -3,24 +3,30 @@
  *
  * Targets `hashicorp/google ~> 8.0` (8.12.0+). Incorporates every GCP security & cost guardrail:
  * - Callback-escaped `hclString()` preserving `$${` and `%%{`
+ * - Strict CEL character validation blocking quote/operator injection in WIF `attribute_condition`
  * - Separate `deploy` (GitHub WIF OIDC) and `runtime` (app) Service Accounts; zero SA JSON keys
- * - Mandatory strict CEL `attribute_condition` on `google_iam_workload_identity_pool_provider`
- *   matching workflow `environment:` (`assertion.repository == '<o>/<r>' && assertion.environment == '<env>'`)
- * - Cloud Run v2 with Direct VPC Egress (`PRIVATE_RANGES_ONLY`), zero legacy VPC connectors, and
- *   `lifecycle { ignore_changes = [template[0].containers[0].image] }`
- * - Compute Engine + Compose renderer with cloud-init Docker + `/opt/opscrew/compose.yml`
- * - Private Cloud SQL (`ipv4_enabled = false`, zero public IPv4 fee) + Private Service Access
- * - Memorystore for Valkey (`google_memorystore_instance`, NEVER legacy `google_redis_instance`)
+ * - Regional Google Artifact Registry DOCKER repository with cleanup policy + scoped writer/reader
+ * - Cloud Run v2 with Direct VPC Egress (`PRIVATE_RANGES_ONLY`), zero legacy VPC connectors,
+ *   explicit `deletion_protection`, `lifecycle { ignore_changes }`, and Secret Manager `secret_key_ref`
+ * - Compute Engine + Compose with Caddy HTTPS TLS, IAP SSH (`35.235.240.0/20`), OS Login, and
+ *   instance-scoped deploy IAM (zero project-wide `compute.instanceAdmin.v1`)
+ * - Private Cloud SQL (`edition = "ENTERPRISE"`, `ipv4_enabled = false`, `ssl_mode = "ENCRYPTED_ONLY"`,
+ *   MySQL `binary_log_enabled`, Postgres IAM auth + DB + runtime IAM user)
+ * - Memorystore for Valkey (`google_memorystore_instance`) + PSC Service Connection Policy
  * - Single-region uniform private GCS bucket (`public_access_prevention = "enforced"`)
- * - Secret Manager shells ONLY (ZERO `google_secret_manager_secret_version` in `.tfstate`)
- * - Global External ALB + Certificate Manager DNS-01 (`acme_validation_records` for Cloudflare
- *   `proxied: false`) when `global-alb-cloud-cdn` edge is chosen
+ * - One Secret Manager shell per declared secret key (ZERO `google_secret_manager_secret_version`)
+ * - Complete Global External ALB + Certificate Manager map + URL map + HTTPS proxy + global IP
  */
+import { createHash } from "node:crypto";
 import type { ManagedCloudRenderedFile } from "@opscrew/contracts";
 import type { GcpTarget } from "@opscrew/plan-schema";
 import { gcpDbInstanceName, gcpServiceName } from "../connector";
 
 export const GCP_PROVIDER_VERSION = "~> 8.0";
+
+const GITHUB_SLUG_RE = /^[A-Za-z0-9_.-]+$/;
+const GITHUB_ENV_RE = /^[A-Za-z0-9_. -]+$/;
+const GITHUB_BRANCH_RE = /^[A-Za-z0-9_./-]+$/;
 
 export interface RenderGcpHclContext {
   readonly appName: string;
@@ -29,6 +35,7 @@ export interface RenderGcpHclContext {
   readonly domain?: string;
   readonly dnsProvider?: string;
   readonly containerPort?: number;
+  readonly secretNames?: readonly string[];
   readonly github: {
     readonly owner: string;
     readonly repo: string;
@@ -49,15 +56,96 @@ export function hclString(value: string): string {
   return `"${escaped}"`;
 }
 
-/** Builds a strict CEL attribute_condition pinning GitHub repository and environment/branch. */
-export function gcpWifAttributeCondition(github: RenderGcpHclContext["github"]): string {
-  const repoFull = `${github.owner}/${github.repo}`;
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 6);
+}
+
+/** Deterministic GCP ID with a 6-char hash suffix clamped to `maxLen` to avoid collisions across envs/re-provisions. */
+function hashedGcpId(prefix: string, raw: string, maxLen: number): string {
+  const hash = shortHash(`${prefix}:${raw}`);
+  const clean = `${prefix}-${raw}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  const headMax = Math.max(4, maxLen - 7);
+  const head = clean.slice(0, headMax).replace(/-+$/g, "");
+  return `${head}-${hash}`;
+}
+
+function sanitizeSecretId(raw: string): string {
+  return raw.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function validateWifGithub(github: RenderGcpHclContext["github"]): {
+  owner: string;
+  repo: string;
+  env?: string;
+  branch?: string;
+} {
+  const owner = github.owner.trim();
+  const repo = github.repo.trim();
+  if (!GITHUB_SLUG_RE.test(owner) || !GITHUB_SLUG_RE.test(repo)) {
+    throw new Error(
+      `Invalid GitHub repository "${github.owner}/${github.repo}" for GCP WIF CEL condition: only letters, digits, ".", "_", and "-" are permitted.`,
+    );
+  }
   const env = github.environmentName?.trim();
   if (env !== undefined && env.length > 0) {
-    return `assertion.repository == '${repoFull}' && assertion.environment == '${env}'`;
+    if (!GITHUB_ENV_RE.test(env)) {
+      throw new Error(
+        `Invalid GitHub environment "${env}" for GCP WIF CEL condition: unsafe characters rejected.`,
+      );
+    }
+    return { owner, repo, env };
   }
-  const branch = github.branch ?? "main";
-  return `assertion.repository == '${repoFull}' && assertion.ref == 'refs/heads/${branch}'`;
+  const branch = (github.branch ?? "main").trim();
+  if (!GITHUB_BRANCH_RE.test(branch)) {
+    throw new Error(
+      `Invalid GitHub branch "${branch}" for GCP WIF CEL condition: unsafe characters rejected.`,
+    );
+  }
+  return { owner, repo, branch };
+}
+
+/** Builds a strict CEL attribute_condition pinning GitHub repository and environment/branch. */
+export function gcpWifAttributeCondition(github: RenderGcpHclContext["github"]): string {
+  const checked = validateWifGithub(github);
+  const repoFull = `${checked.owner}/${checked.repo}`;
+  if (checked.env !== undefined) {
+    return `assertion.repository == '${repoFull}' && assertion.environment == '${checked.env}'`;
+  }
+  return `assertion.repository == '${repoFull}' && assertion.ref == 'refs/heads/${checked.branch ?? "main"}'`;
+}
+
+function wantsActiveAlb(ctx: RenderGcpHclContext): boolean {
+  return (
+    ctx.target.compute === "cloud-run" &&
+    ctx.target.components.edge?.service === "global-alb-cloud-cdn" &&
+    Boolean(ctx.domain?.trim())
+  );
+}
+
+function normalizedSecretEntries(
+  ctx: RenderGcpHclContext,
+): Array<{ envName: string; secretId: string }> {
+  const names = (ctx.secretNames ?? []).filter((n) => n.trim().length > 0);
+  const seen = new Map<string, string>();
+  const out: Array<{ envName: string; secretId: string }> = [];
+  for (const raw of names) {
+    const secretId = sanitizeSecretId(raw);
+    const existing = seen.get(secretId);
+    if (existing !== undefined && existing !== raw) {
+      throw new Error(
+        `GCP Secret Manager name collision: "${existing}" and "${raw}" both map to "${secretId}".`,
+      );
+    }
+    if (existing === undefined) {
+      seen.set(secretId, raw);
+      out.push({ envName: raw, secretId });
+    }
+  }
+  return out;
 }
 
 function renderVersionsTf(): string {
@@ -109,7 +197,7 @@ variable "region" {
 
 variable "container_image" {
   type        = string
-  description = "Initial bootstrap image; live revisions are deployed via keyless GitHub WIF."
+  description = "Initial bootstrap image; live revisions are deployed from Artifact Registry via keyless GitHub WIF."
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
@@ -134,6 +222,7 @@ function renderNetworkTf(ctx: RenderGcpHclContext): string {
   const publicDb = ctx.target.guardrails.privateDatabase === false;
   const needsPsa = hasDb && !publicDb;
   const natEnabled = ctx.target.components.network?.config.cloudNat === true;
+  const isComputeEngine = ctx.target.compute === "compute-engine";
 
   const vpcBlock =
     existingVpc !== undefined
@@ -162,6 +251,37 @@ locals {
   active_vpc_name = google_compute_network.app.name
 }
 `;
+
+  const gceFirewalls = isComputeEngine
+    ? `
+resource "google_compute_firewall" "allow_https" {
+  name    = ${hclString(`fw-https-${name}`)}
+  network = local.active_vpc_name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["80", "443"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["opscrew-web"]
+}
+
+resource "google_compute_firewall" "allow_iap_ssh" {
+  name    = ${hclString(`fw-iap-ssh-${name}`)}
+  network = local.active_vpc_name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  # Google Identity-Aware Proxy (IAP) TCP forwarding CIDR only (never 0.0.0.0/0).
+  source_ranges = ["35.235.240.0/20"]
+  target_tags   = ["opscrew-web"]
+}
+`
+    : "";
 
   const psaBlock = needsPsa
     ? `
@@ -207,47 +327,70 @@ resource "google_compute_subnetwork" "app" {
   network                  = local.active_vpc_id
   private_ip_google_access = true
 }
-
-resource "google_compute_firewall" "allow_https" {
-  name    = ${hclString(`fw-https-${name}`)}
-  network = local.active_vpc_name
-
-  allow {
-    protocol = "tcp"
-    ports    = ["443"]
-  }
-
-  source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["opscrew-web"]
-}
-${psaBlock}${natBlock}`;
+${gceFirewalls}${psaBlock}${natBlock}`;
 }
 
 function renderIamTf(ctx: RenderGcpHclContext): string {
+  const checked = validateWifGithub(ctx.github);
+  const repoFull = `${checked.owner}/${checked.repo}`;
+  const rawKey = `${ctx.appName}-${ctx.environment}`;
   const name = gcpServiceName(ctx.appName, ctx.environment);
-  const deploySaId = `deploy-${ctx.appName}-${ctx.environment}`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 28)
-    .replace(/-+$/g, "");
-  const runtimeSaId = `run-${ctx.appName}-${ctx.environment}`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 28)
-    .replace(/-+$/g, "");
-  const poolId = `gh-${name}`.slice(0, 32).replace(/-+$/g, "");
+  const deploySaId = hashedGcpId("deploy", rawKey, 30);
+  const runtimeSaId = hashedGcpId("run", rawKey, 30);
+  const poolId = hashedGcpId("gh", rawKey, 32);
   const condition = gcpWifAttributeCondition(ctx.github);
-  const repoFull = `${ctx.github.owner}/${ctx.github.repo}`;
-  const envName = ctx.github.environmentName?.trim();
-  const principalMember =
-    envName !== undefined && envName.length > 0
-      ? `principalSet://iam.googleapis.com/\${google_iam_workload_identity_pool.github.name}/attribute.repo_env/${repoFull}:${envName}`
-      : `principalSet://iam.googleapis.com/\${google_iam_workload_identity_pool.github.name}/attribute.repository/${repoFull}`;
+  const isEnvMode = checked.env !== undefined;
 
-  const deployRole =
+  const attributeMapping = isEnvMode
+    ? `  attribute_mapping = {
+    "google.subject"        = "assertion.sub"
+    "attribute.actor"       = "assertion.actor"
+    "attribute.repository"  = "assertion.repository"
+    "attribute.environment" = "assertion.environment"
+    "attribute.repo_env"    = "assertion.repository + ':' + assertion.environment"
+  }`
+    : `  attribute_mapping = {
+    "google.subject"       = "assertion.sub"
+    "attribute.actor"      = "assertion.actor"
+    "attribute.repository" = "assertion.repository"
+    "attribute.ref"        = "assertion.ref"
+  }`;
+
+  const principalMember = isEnvMode
+    ? `principalSet://iam.googleapis.com/\${google_iam_workload_identity_pool.github.name}/attribute.repo_env/${repoFull}:${checked.env}`
+    : `principalSet://iam.googleapis.com/\${google_iam_workload_identity_pool.github.name}/attribute.repository/${repoFull}`;
+
+  const computeDeployIam =
     ctx.target.compute === "compute-engine"
-      ? "roles/compute.instanceAdmin.v1"
-      : "roles/run.developer";
+      ? `# Instance-scoped deploy IAM only (no project-wide compute.instanceAdmin.v1 or startup-script takeover).
+resource "google_compute_instance_iam_member" "deploy_os_login" {
+  project       = var.project_id
+  zone          = google_compute_instance.app.zone
+  instance_name = google_compute_instance.app.name
+  role          = "roles/compute.osAdminLogin"
+  member        = "serviceAccount:\${google_service_account.deploy.email}"
+}
+
+resource "google_iap_tunnel_instance_iam_member" "deploy_iap" {
+  project  = var.project_id
+  zone     = google_compute_instance.app.zone
+  instance = google_compute_instance.app.name
+  role     = "roles/iap.tunnelResourceAccessor"
+  member   = "serviceAccount:\${google_service_account.deploy.email}"
+}
+`
+      : `resource "google_project_iam_member" "deploy_role" {
+  project = var.project_id
+  role    = "roles/run.developer"
+  member  = "serviceAccount:\${google_service_account.deploy.email}"
+}
+
+resource "google_service_account_iam_member" "deploy_act_as_runtime" {
+  service_account_id = google_service_account.runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:\${google_service_account.deploy.email}"
+}
+`;
 
   return `# Separate CI/CD deploy SA (no Secret Manager read access) and app runtime SA.
 # Zero google_service_account_key resources (keyless Workload Identity Federation only).
@@ -274,13 +417,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     issuer_uri = "https://token.actions.githubusercontent.com"
   }
 
-  attribute_mapping = {
-    "google.subject"        = "assertion.sub"
-    "attribute.actor"       = "assertion.actor"
-    "attribute.repository"  = "assertion.repository"
-    "attribute.environment" = "assertion.environment"
-    "attribute.repo_env"    = "assertion.repository + ':' + assertion.environment"
-  }
+${attributeMapping}
 
   attribute_condition = ${hclString(condition)}
 }
@@ -291,45 +428,91 @@ resource "google_service_account_iam_member" "github_wif" {
   member             = "${principalMember}"
 }
 
-resource "google_project_iam_member" "deploy_role" {
-  project = var.project_id
-  role    = ${hclString(deployRole)}
-  member  = "serviceAccount:\${google_service_account.deploy.email}"
+# Regional Artifact Registry repository for Cloud Run / Compute Engine container images.
+resource "google_artifact_registry_repository" "app" {
+  location      = var.region
+  repository_id = ${hclString(name)}
+  description   = ${hclString(`OpsCrew container images for ${ctx.appName} (${ctx.environment})`)}
+  format        = "DOCKER"
+
+  cleanup_policies {
+    id     = "keep-recent"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 10
+    }
+  }
 }
 
-resource "google_service_account_iam_member" "deploy_act_as_runtime" {
-  service_account_id = google_service_account.runtime.name
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:\${google_service_account.deploy.email}"
+resource "google_artifact_registry_repository_iam_member" "deploy_writer" {
+  location   = google_artifact_registry_repository.app.location
+  repository = google_artifact_registry_repository.app.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:\${google_service_account.deploy.email}"
 }
-`;
+
+resource "google_artifact_registry_repository_iam_member" "runtime_reader" {
+  location   = google_artifact_registry_repository.app.location
+  repository = google_artifact_registry_repository.app.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:\${google_service_account.runtime.email}"
+}
+
+${computeDeployIam}`;
 }
 
 function renderComputeTf(ctx: RenderGcpHclContext): string {
   const name = gcpServiceName(ctx.appName, ctx.environment);
   const cfg = ctx.target.components.compute?.config ?? {};
+  const secretEntries = normalizedSecretEntries(ctx);
 
   if (ctx.target.compute === "compute-engine") {
     const machineType = typeof cfg.machineType === "string" ? cfg.machineType : "e2-small";
+    const caddySite = ctx.domain?.trim() || ":80";
     const startupScript = `#!/usr/bin/env bash
 set -euo pipefail
 apt-get update && apt-get install -y docker.io docker-compose-v2
 systemctl enable --now docker
 mkdir -p /opt/opscrew
+cat <<'EOF' >/opt/opscrew/Caddyfile
+${caddySite} {
+  reverse_proxy app:${ctx.containerPort ?? 3000}
+}
+EOF
 cat <<'EOF' >/opt/opscrew/compose.yml
 services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/opscrew/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
   app:
     image: \${OPSCREW_IMAGE:-us-docker.pkg.dev/cloudrun/container/hello}
     restart: unless-stopped
-    ports:
-      - "443:${ctx.containerPort ?? 3000}"
+    expose:
+      - "${ctx.containerPort ?? 3000}"
+volumes:
+  caddy_data:
+  caddy_config:
 EOF
+docker compose -f /opt/opscrew/compose.yml up -d
 `;
     return `resource "google_compute_instance" "app" {
   name         = ${hclString(name)}
   machine_type = ${hclString(machineType)}
   zone         = "\${var.region}-a"
   tags         = ["opscrew-web"]
+
+  metadata = {
+    enable-oslogin = "TRUE"
+  }
 
   boot_disk {
     initialize_params {
@@ -362,11 +545,29 @@ locals {
   const maxInstances = typeof cfg.maxInstances === "number" ? cfg.maxInstances : 4;
   const cpu = typeof cfg.cpu === "number" ? cfg.cpu : 1;
   const memoryMb = typeof cfg.memoryMb === "number" ? cfg.memoryMb : 512;
+  const albActive = wantsActiveAlb(ctx);
+  const ingress = albActive ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL";
+  const deletionProtection = ctx.target.preset === "production-ha";
+
+  const secretEnvBlocks = secretEntries
+    .map(
+      (s) => `      env {
+        name = ${hclString(s.envName)}
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.app[${hclString(s.secretId)}].secret_id
+            version = "latest"
+          }
+        }
+      }`,
+    )
+    .join("\n\n");
 
   return `resource "google_cloud_run_v2_service" "app" {
-  name     = ${hclString(name)}
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  name                = ${hclString(name)}
+  location            = var.region
+  ingress             = ${hclString(ingress)}
+  deletion_protection = ${deletionProtection ? "true" : "false"}
 
   template {
     service_account = google_service_account.runtime.email
@@ -397,7 +598,7 @@ locals {
           memory = ${hclString(`${memoryMb}Mi`)}
         }
       }
-    }
+${secretEnvBlocks.length > 0 ? `\n${secretEnvBlocks}\n` : ""}    }
   }
 
   lifecycle {
@@ -423,6 +624,11 @@ function renderDatabaseTf(ctx: RenderGcpHclContext): string | undefined {
   const db = ctx.target.components.database;
   if (db === undefined) return undefined;
   const instanceName = gcpDbInstanceName(ctx.appName, ctx.environment);
+  const dbName = ctx.appName
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "_")
+    .replace(/^[^a-z]/, "a")
+    .slice(0, 63);
   const isMysql = db.service === "cloud-sql-mysql";
   const publicAccess = ctx.target.guardrails.privateDatabase === false;
   const regionalHa = db.config.regionalHa === true;
@@ -433,6 +639,28 @@ function renderDatabaseTf(ctx: RenderGcpHclContext): string | undefined {
   const retention =
     typeof db.config.backupRetentionDays === "number" ? db.config.backupRetentionDays : 7;
 
+  const backupPitrBlock = isMysql
+    ? `      enabled            = true
+      binary_log_enabled = true`
+    : `      enabled                        = true
+      point_in_time_recovery_enabled = true`;
+
+  const iamAuthFlags = isMysql
+    ? `
+    database_flags {
+      name  = "cloudsql_iam_authentication"
+      value = "on"
+    }`
+    : `
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }`;
+
+  const iamUserNameExpr = isMysql
+    ? `split("@", google_service_account.runtime.email)[0]`
+    : `trimsuffix(google_service_account.runtime.email, ".gserviceaccount.com")`;
+
   return `resource "google_sql_database_instance" "app" {
   name                = ${hclString(instanceName)}
   database_version    = ${hclString(isMysql ? "MYSQL_8_0" : "POSTGRES_16")}
@@ -440,28 +668,46 @@ function renderDatabaseTf(ctx: RenderGcpHclContext): string | undefined {
   deletion_protection = ${ctx.target.preset === "production-ha" ? "true" : "false"}
 
   settings {
+    edition           = "ENTERPRISE"
     tier              = ${hclString(tier)}
     availability_type = ${hclString(regionalHa ? "REGIONAL" : "ZONAL")}
     disk_size         = 10
 
     ip_configuration {
       ipv4_enabled    = ${publicAccess ? "true" : "false"}
+      ssl_mode        = "ENCRYPTED_ONLY"
       ${publicAccess ? "" : "private_network = local.active_vpc_id"}
     }
 
     backup_configuration {
-      enabled                        = true
-      point_in_time_recovery_enabled = true
+${backupPitrBlock}
       backup_retention_settings {
         retained_backups = ${retention}
       }
-    }
+    }${iamAuthFlags}
   }
 ${publicAccess ? "" : "\n  depends_on = [google_service_networking_connection.private_vpc]\n"}}
+
+resource "google_sql_database" "app" {
+  name     = ${hclString(dbName)}
+  instance = google_sql_database_instance.app.name
+}
+
+resource "google_sql_user" "runtime" {
+  name     = ${iamUserNameExpr}
+  instance = google_sql_database_instance.app.name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
 
 resource "google_project_iam_member" "runtime_cloudsql_client" {
   project = var.project_id
   role    = "roles/cloudsql.client"
+  member  = "serviceAccount:\${google_service_account.runtime.email}"
+}
+
+resource "google_project_iam_member" "runtime_cloudsql_instance_user" {
+  project = var.project_id
+  role    = "roles/cloudsql.instanceUser"
   member  = "serviceAccount:\${google_service_account.runtime.email}"
 }
 `;
@@ -473,9 +719,22 @@ function renderCacheTf(ctx: RenderGcpHclContext): string | undefined {
   const nodeType =
     typeof cache.config.nodeType === "string" ? cache.config.nodeType : "SHARED_CORE_NANO";
   const replicas = typeof cache.config.replicaCount === "number" ? cache.config.replicaCount : 0;
-  const name = `valkey-${gcpServiceName(ctx.appName, ctx.environment)}`.slice(0, 63);
+  const baseName = gcpServiceName(ctx.appName, ctx.environment);
+  const name = `valkey-${baseName}`.slice(0, 63);
 
-  return `# Memorystore for Valkey (replaces legacy google_redis_instance)
+  return `# Service Connection Policy required for Memorystore for Valkey PSC auto-created endpoints.
+resource "google_network_connectivity_service_connection_policy" "memorystore" {
+  name          = ${hclString(`scp-${baseName}`.slice(0, 63))}
+  location      = var.region
+  service_class = "gcp-memorystore"
+  network       = local.active_vpc_id
+
+  psc_config {
+    subnetworks = [google_compute_subnetwork.app.id]
+  }
+}
+
+# Memorystore for Valkey (replaces legacy google_redis_instance)
 resource "google_memorystore_instance" "app" {
   instance_id                 = ${hclString(name)}
   location                    = var.region
@@ -490,6 +749,8 @@ resource "google_memorystore_instance" "app" {
     network    = local.active_vpc_id
     project_id = var.project_id
   }
+
+  depends_on = [google_network_connectivity_service_connection_policy.memorystore]
 }
 `;
 }
@@ -497,10 +758,7 @@ resource "google_memorystore_instance" "app" {
 function renderStorageTf(ctx: RenderGcpHclContext): string | undefined {
   const storage = ctx.target.components.storage;
   if (storage === undefined) return undefined;
-  const bucketName = `opscrew-${ctx.appName}-${ctx.environment}-assets`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 63);
+  const bucketName = hashedGcpId("opscrew", `${ctx.appName}-${ctx.environment}-assets`, 63);
   const publicAccess = ctx.target.guardrails.privateStorage === false;
 
   return `# Single-region GCS bucket co-located with Cloud Run (uniform access + public prevention)
@@ -521,14 +779,24 @@ resource "google_storage_bucket_iam_member" "runtime_object_user" {
 }
 
 function renderSecretsTf(ctx: RenderGcpHclContext): string {
-  const secretId = `opscrew_${ctx.appName}_${ctx.environment}_app_env`.replace(
-    /[^a-zA-Z0-9_-]/g,
-    "_",
-  );
-  return `# Secret Manager shell ONLY — zero secret versions in Terraform state.
-# Secret values are populated out-of-band via OpsCrew's GCP connector after approval.
-resource "google_secret_manager_secret" "app_env" {
-  secret_id = ${hclString(secretId)}
+  const entries = normalizedSecretEntries(ctx);
+  const secretIds =
+    entries.length > 0
+      ? entries.map((e) => e.secretId)
+      : [sanitizeSecretId(`opscrew_${ctx.appName}_${ctx.environment}_app_env`)];
+  const setLiteral = secretIds.map((id) => `    ${hclString(id)},`).join("\n");
+
+  return `# Secret Manager shells ONLY — zero secret versions in Terraform state.
+# Secret values are populated out-of-band via OpsCrew's GCP connector after plan-hash approval.
+locals {
+  opscrew_secret_ids = toset([
+${setLiteral}
+  ])
+}
+
+resource "google_secret_manager_secret" "app" {
+  for_each  = local.opscrew_secret_ids
+  secret_id = each.value
 
   replication {
     auto {}
@@ -536,7 +804,8 @@ resource "google_secret_manager_secret" "app_env" {
 }
 
 resource "google_secret_manager_secret_iam_member" "runtime_accessor" {
-  secret_id = google_secret_manager_secret.app_env.secret_id
+  for_each  = google_secret_manager_secret.app
+  secret_id = each.value.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:\${google_service_account.runtime.email}"
 }
@@ -544,14 +813,14 @@ resource "google_secret_manager_secret_iam_member" "runtime_accessor" {
 }
 
 function renderEdgeTf(ctx: RenderGcpHclContext): string | undefined {
-  const wantsAlb = ctx.target.components.edge?.service === "global-alb-cloud-cdn";
-  if (!wantsAlb) return undefined;
+  if (!wantsActiveAlb(ctx)) return undefined;
+  const domain = ctx.domain?.trim();
+  if (!domain) return undefined;
   const name = gcpServiceName(ctx.appName, ctx.environment);
-  const domain = ctx.domain ?? `${ctx.appName}.example.com`;
 
   return `resource "google_certificate_manager_dns_authorization" "app" {
   name        = ${hclString(`dns-auth-${name}`)}
-  description = "DNS-01 authorization for ${domain} (keep _acme-challenge CNAME unproxied on Cloudflare)"
+  description = ${hclString(`DNS-01 authorization for ${domain} (keep _acme-challenge CNAME unproxied on Cloudflare)`)}
   domain      = ${hclString(domain)}
 }
 
@@ -562,6 +831,18 @@ resource "google_certificate_manager_certificate" "app" {
     domains            = [${hclString(domain)}]
     dns_authorizations = [google_certificate_manager_dns_authorization.app.id]
   }
+}
+
+resource "google_certificate_manager_certificate_map" "app" {
+  name        = ${hclString(`cmap-${name}`)}
+  description = ${hclString(`Certificate map for ${domain}`)}
+}
+
+resource "google_certificate_manager_certificate_map_entry" "app" {
+  name         = ${hclString(`cme-${name}`)}
+  map          = google_certificate_manager_certificate_map.app.name
+  certificates = [google_certificate_manager_certificate.app.id]
+  hostname     = ${hclString(domain)}
 }
 
 resource "google_compute_region_network_endpoint_group" "cloud_run" {
@@ -583,13 +864,42 @@ resource "google_compute_backend_service" "app" {
     group = google_compute_region_network_endpoint_group.cloud_run.id
   }
 }
+
+resource "google_compute_url_map" "app" {
+  name            = ${hclString(`um-${name}`)}
+  default_service = google_compute_backend_service.app.id
+}
+
+resource "google_compute_target_https_proxy" "app" {
+  name            = ${hclString(`https-${name}`)}
+  url_map         = google_compute_url_map.app.id
+  certificate_map = "//certificatemanager.googleapis.com/\${google_certificate_manager_certificate_map.app.id}"
+}
+
+resource "google_compute_global_address" "alb" {
+  name = ${hclString(`ip-${name}`)}
+}
+
+resource "google_compute_global_forwarding_rule" "https" {
+  name                  = ${hclString(`fr-${name}`)}
+  ip_protocol           = "TCP"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  port_range            = "443"
+  target                = google_compute_target_https_proxy.app.id
+  ip_address            = google_compute_global_address.alb.id
+}
 `;
 }
 
 function renderOutputsTf(ctx: RenderGcpHclContext): string {
-  const wantsAlb = ctx.target.components.edge?.service === "global-alb-cloud-cdn";
-  const acmeOutput = wantsAlb
+  const albActive = wantsActiveAlb(ctx);
+  const acmeOutput = albActive
     ? `
+output "alb_ip" {
+  description = "Global External ALB static IPv4 address for the custom domain A record."
+  value       = google_compute_global_address.alb.address
+}
+
 output "acme_validation_records" {
   description = "Certificate Manager DNS-01 CNAME records (must be written DNS-only / proxied = false on Cloudflare)."
   value = [
@@ -613,6 +923,10 @@ output "acme_validation_records" {
 
 output "deploy_service_account" {
   value = google_service_account.deploy.email
+}
+
+output "artifact_registry_repository" {
+  value = "\${var.region}-docker.pkg.dev/\${var.project_id}/\${google_artifact_registry_repository.app.repository_id}"
 }
 
 output "app_endpoint" {

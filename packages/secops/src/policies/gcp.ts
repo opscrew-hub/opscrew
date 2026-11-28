@@ -4,11 +4,16 @@
  *
  * Every sensitive attribute in `after_unknown` fails closed:
  * 1. `gcp-wif-strict-condition`: `google_iam_workload_identity_pool_provider` requires GitHub OIDC
- *    issuer AND non-empty wildcard-free `attribute_condition` pinning `assertion.repository` and
- *    `assertion.environment` / `assertion.ref`.
+ *    issuer AND exact full-string CEL `attribute_condition` pinning `assertion.repository` and
+ *    `assertion.environment` / `assertion.ref` (rejects `!=`, `||`, `startsWith`, wildcards).
  * 2. `gcp-no-sa-keys`: blocks `google_service_account_key`.
- * 3. `gcp-iam-least-privilege`: blocks `roles/owner`, `roles/editor`, `roles/iam.securityAdmin`,
- *    `roles/resourcemanager.projectIamAdmin` (fail-closed on unknown role).
+ * 3. `gcp-iam-least-privilege`: blocks primitive & privilege-escalation IAM roles on project/folder/
+ *    org (`roles/owner`, `roles/editor`, `roles/viewer`, `roles/iam.securityAdmin`,
+ *    `roles/resourcemanager.projectIamAdmin`, `roles/iam.serviceAccountTokenCreator`,
+ *    `roles/iam.serviceAccountKeyAdmin`, `roles/iam.serviceAccountAdmin`,
+ *    `roles/iam.workloadIdentityPoolAdmin`, project-level `roles/iam.serviceAccountUser`), plus
+ *    `google_project_iam_policy`, and `allUsers`/`allAuthenticatedUsers` on GCS buckets and Secret
+ *    Manager secrets.
  * 4. `gcp-cloudsql-private`: `google_sql_database_instance` requires `ipv4_enabled = false` unless
  *    explicitly excepted (fail-closed on unknown).
  * 5. `gcp-no-legacy-vpc-connector`: blocks legacy `google_vpc_access_connector`.
@@ -17,19 +22,49 @@
  *    and `public_access_prevention = "enforced"` (fail-closed on unknown).
  * 8. `gcp-no-secret-in-state`: blocks `google_secret_manager_secret_version`.
  * 9. `gcp-firewall-no-open-sensitive-ports`: blocks `google_compute_firewall` exposing ports
- *    22/3306/5432/6379/27017 to `0.0.0.0/0` or `::/0`.
+ *    22/3306/5432/6379/27017 to `0.0.0.0/0` or `::/0`, AND fails closed when `source_ranges` is
+ *    unknown or omitted without `source_tags`/`source_service_accounts`, or when `allow` is unknown.
  */
 import type { PlannedResourceJson, PolicyResult, Severity } from "@opscrew/contracts";
 import { isRecord } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { plannedResources } from "./plan";
 
+const STRICT_GITHUB_WIF_CEL_RE =
+  /^assertion\.repository == '[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+' && (?:assertion\.environment == '[A-Za-z0-9_. -]+'|assertion\.ref == 'refs\/heads\/[A-Za-z0-9_./-]+')$/;
+
 const DANGEROUS_GCP_ROLES = new Set([
   "roles/owner",
   "roles/editor",
+  "roles/viewer",
   "roles/iam.securityadmin",
   "roles/resourcemanager.projectiamadmin",
+  "roles/iam.serviceaccounttokencreator",
+  "roles/iam.serviceaccountkeyadmin",
+  "roles/iam.serviceaccountadmin",
+  "roles/iam.workloadidentitypooladmin",
+  "roles/iam.serviceaccountuser",
 ]);
+
+const PROJECT_WIDE_IAM_TYPES = new Set([
+  "google_project_iam_member",
+  "google_project_iam_binding",
+  "google_folder_iam_member",
+  "google_folder_iam_binding",
+  "google_organization_iam_member",
+  "google_organization_iam_binding",
+]);
+
+const SENSITIVE_PUBLIC_IAM_TYPES = new Set([
+  "google_storage_bucket_iam_member",
+  "google_storage_bucket_iam_binding",
+  "google_storage_bucket_iam_policy",
+  "google_secret_manager_secret_iam_member",
+  "google_secret_manager_secret_iam_binding",
+  "google_secret_manager_secret_iam_policy",
+]);
+
+const PUBLIC_MEMBERS = new Set(["allusers", "allauthenticatedusers"]);
 const OPEN_CIDRS = new Set(["0.0.0.0/0", "::/0"]);
 const SENSITIVE_PORTS = new Set([22, 3306, 5432, 6379, 27017]);
 
@@ -72,7 +107,7 @@ function checkWifAndIam(resources: readonly PlannedResourceJson[]): PolicyResult
     if (r.type === "google_iam_workload_identity_pool_provider") {
       const unknownCond = r.unknown?.attribute_condition === true;
       const cond =
-        typeof r.values.attribute_condition === "string" ? r.values.attribute_condition : "";
+        typeof r.values.attribute_condition === "string" ? r.values.attribute_condition.trim() : "";
       const oidcArr = Array.isArray(r.values.oidc) ? r.values.oidc : [];
       const oidc = isRecord(oidcArr[0])
         ? oidcArr[0]
@@ -86,13 +121,8 @@ function checkWifAndIam(resources: readonly PlannedResourceJson[]): PolicyResult
         violation = `${r.address} has unknown attribute_condition at plan time (fail-closed).`;
       } else if (issuer !== "https://token.actions.githubusercontent.com") {
         violation = `${r.address} OIDC issuer_uri must be "https://token.actions.githubusercontent.com" (got ${String(issuer)}).`;
-      } else if (
-        cond.trim().length === 0 ||
-        !cond.includes("assertion.repository") ||
-        (!cond.includes("assertion.environment") && !cond.includes("assertion.ref")) ||
-        cond.includes("*")
-      ) {
-        violation = `${r.address} attribute_condition must strictly pin assertion.repository and assertion.environment/ref without wildcards (got ${JSON.stringify(cond)}).`;
+      } else if (!STRICT_GITHUB_WIF_CEL_RE.test(cond)) {
+        violation = `${r.address} attribute_condition must exactly match assertion.repository == '<owner>/<repo>' && (assertion.environment == '<env>' | assertion.ref == 'refs/heads/<branch>') (got ${JSON.stringify(cond)}).`;
       }
       out.push(
         policy(
@@ -119,7 +149,24 @@ function checkWifAndIam(resources: readonly PlannedResourceJson[]): PolicyResult
       );
     }
 
-    if (r.type === "google_project_iam_member" || r.type === "google_project_iam_binding") {
+    if (
+      r.type === "google_project_iam_policy" ||
+      r.type === "google_folder_iam_policy" ||
+      r.type === "google_organization_iam_policy"
+    ) {
+      out.push(
+        policy(
+          "gcp-iam-least-privilege",
+          "GCP project IAM follows least privilege",
+          "critical",
+          false,
+          `${r.address} replaces the entire IAM policy (${r.type}); use narrowly scoped *_iam_member resources instead.`,
+          r.address,
+        ),
+      );
+    }
+
+    if (PROJECT_WIDE_IAM_TYPES.has(r.type)) {
       const unknownRole = r.unknown?.role === true;
       const role = typeof r.values.role === "string" ? r.values.role.trim() : "";
       const dangerous = DANGEROUS_GCP_ROLES.has(role.toLowerCase());
@@ -132,11 +179,37 @@ function checkWifAndIam(resources: readonly PlannedResourceJson[]): PolicyResult
           unknownRole
             ? `${r.address} has unknown IAM role at plan time (fail-closed).`
             : dangerous
-              ? `${r.address} grants overly broad role "${role}"; use a least-privilege service role.`
+              ? `${r.address} grants overly broad or privilege-escalation role "${role}"; use a least-privilege resource-scoped role.`
               : `${r.address} grants scoped role "${role}".`,
           r.address,
         ),
       );
+    }
+
+    if (SENSITIVE_PUBLIC_IAM_TYPES.has(r.type)) {
+      const unknownMembers =
+        r.unknown?.member === true ||
+        r.unknown?.members === true ||
+        r.unknown?.policy_data === true;
+      const members = [...stringList(r.values.member), ...stringList(r.values.members)];
+      const policyData = typeof r.values.policy_data === "string" ? r.values.policy_data : "";
+      const hasPublicMember =
+        members.some((m) => PUBLIC_MEMBERS.has(m.trim().toLowerCase())) ||
+        /\b(?:allUsers|allAuthenticatedUsers)\b/i.test(policyData);
+      if (unknownMembers || hasPublicMember) {
+        out.push(
+          policy(
+            "gcp-iam-least-privilege",
+            "GCP storage and secret IAM rejects public allUsers/allAuthenticatedUsers grants",
+            "critical",
+            false,
+            unknownMembers
+              ? `${r.address} has unknown IAM member/policy at plan time (fail-closed).`
+              : `${r.address} grants public access (allUsers/allAuthenticatedUsers) to a GCS bucket or Secret Manager secret.`,
+            r.address,
+          ),
+        );
+      }
     }
   }
   return out;
@@ -248,8 +321,34 @@ function checkDataAndNetwork(
     if (r.type === "google_compute_firewall") {
       const direction = String(r.values.direction ?? "INGRESS").toUpperCase();
       if (direction !== "INGRESS") continue;
+
+      if (r.unknown?.source_ranges === true || r.unknown?.allow === true) {
+        out.push(
+          policy(
+            "gcp-firewall-no-open-sensitive-ports",
+            "GCP VPC firewall does not expose database/cache/SSH ports to the internet",
+            "critical",
+            false,
+            `${r.address} has unknown source_ranges or allow rules at plan time (fail-closed).`,
+            r.address,
+          ),
+        );
+        continue;
+      }
+
       const sources = stringList(r.values.source_ranges);
-      if (!sources.some((s) => OPEN_CIDRS.has(s))) continue;
+      const sourceTags = stringList(r.values.source_tags);
+      const sourceSas = stringList(r.values.source_service_accounts);
+      const effectivelyOpen =
+        sources.some((s) => OPEN_CIDRS.has(s)) ||
+        (sources.length === 0 && sourceTags.length === 0 && sourceSas.length === 0);
+      if (!effectivelyOpen) continue;
+
+      const openDesc =
+        sources.length === 0
+          ? "0.0.0.0/0 (default when source_ranges/source_tags/source_service_accounts omitted)"
+          : sources.filter((s) => OPEN_CIDRS.has(s)).join(", ");
+
       const allows = Array.isArray(r.values.allow) ? r.values.allow : [];
       for (const rule of allows) {
         if (!isRecord(rule)) continue;
@@ -264,7 +363,7 @@ function checkDataAndNetwork(
                 "GCP VPC firewall does not expose database/cache/SSH ports to the internet",
                 "critical",
                 false,
-                `${r.address} exposes port ${hit} (spec ${spec}) to ${sources.filter((s) => OPEN_CIDRS.has(s)).join(", ")}.`,
+                `${r.address} exposes port ${hit} (spec ${spec}) to ${openDesc}.`,
                 r.address,
               ),
             );

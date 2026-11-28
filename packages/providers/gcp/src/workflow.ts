@@ -2,9 +2,10 @@
  * Keyless GitHub Actions OIDC (Workload Identity Federation) deploy workflow renderer for Google
  * Cloud (Feature 039, T3903).
  *
- * Uses `google-github-actions/auth@v2` (`id-token: write`, ZERO Service Account JSON keys) and
- * pins `environment: <env>` to match `google_iam_workload_identity_pool_provider`'s strict CEL
- * `attribute_condition` (`assertion.repository == '<o>/<r>' && assertion.environment == '<env>'`).
+ * Uses `google-github-actions/auth@v2` (`id-token: write`, ZERO Service Account JSON keys),
+ * pushes images to Google Artifact Registry (`<region>-docker.pkg.dev`) so Cloud Run and Compute
+ * Engine can pull directly via IAM, and pins `environment: <env>` to match
+ * `google_iam_workload_identity_pool_provider`'s strict CEL `attribute_condition`.
  */
 import type { ManagedCloudRenderedFile } from "@opscrew/contracts";
 import type { GcpTarget } from "@opscrew/plan-schema";
@@ -31,13 +32,13 @@ export function renderGcpDeployWorkflow(input: RenderGcpWorkflowInput): ManagedC
   const serviceName = gcpServiceName(input.appName, input.environment);
   const deployStep =
     input.target.compute === "compute-engine"
-      ? `      - name: Trigger zero-key Compute Engine Compose update
+      ? `      - name: Deploy container revision to Compute Engine via IAP SSH
         env:
           INSTANCE_NAME: ${yamlString(serviceName)}
           REGION: ${yamlString(input.target.region)}
           IMAGE_REF: \${{ steps.build.outputs.image }}
         run: |
-          gcloud compute ssh "$INSTANCE_NAME" --zone "\${REGION}-a" --tunnel-through-iap --command "OPSCREW_IMAGE='$IMAGE_REF' docker compose -f /opt/opscrew/compose.yml up -d"`
+          gcloud compute ssh "$INSTANCE_NAME" --zone "\${REGION}-a" --tunnel-through-iap --quiet --command "sudo gcloud auth configure-docker \${REGION}-docker.pkg.dev --quiet && sudo env OPSCREW_IMAGE='$IMAGE_REF' docker compose -f /opt/opscrew/compose.yml up -d"`
       : `      - name: Deploy container revision to Google Cloud Run
         env:
           SERVICE_NAME: ${yamlString(serviceName)}
@@ -62,7 +63,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  packages: write
 
 concurrency:
   group: ${yamlString(`opscrew-gcp-${input.appName}-${input.environment}`)}
@@ -85,20 +85,21 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: \${{ github.actor }}
-          password: \${{ secrets.GITHUB_TOKEN }}
+      - name: Configure Docker for Google Artifact Registry
+        env:
+          REGION: ${yamlString(input.target.region)}
+        run: |
+          gcloud auth configure-docker "\${REGION}-docker.pkg.dev" --quiet
 
-      - name: Build and push container image
+      - name: Build and push container image to Artifact Registry
         id: build
         env:
-          IMAGE_NAME: ghcr.io/\${{ github.repository }}
+          REGION: ${yamlString(input.target.region)}
+          PROJECT_ID: \${{ vars.GCP_PROJECT_ID }}
+          REPO_NAME: ${yamlString(serviceName)}
+          SERVICE_NAME: ${yamlString(serviceName)}
         run: |
-          IMAGE_LOWER=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
-          IMAGE_TAG="$IMAGE_LOWER:\${{ github.sha }}"
+          IMAGE_TAG="\${REGION}-docker.pkg.dev/\${PROJECT_ID}/\${REPO_NAME}/\${SERVICE_NAME}:\${{ github.sha }}"
           docker build -t "$IMAGE_TAG" .
           docker push "$IMAGE_TAG"
           echo "image=$IMAGE_TAG" >> "$GITHUB_OUTPUT"

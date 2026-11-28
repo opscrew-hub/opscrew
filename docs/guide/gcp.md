@@ -62,4 +62,4 @@ When your domain stays on Cloudflare (`dns.provider: cloudflare`), OpsCrew write
 - `opscrew logs` — queries redacted logs from Google Cloud Logging.
 - `opscrew drift` — compares rendered HCL and runs a refresh-only OpenTofu plan.
 - Backups & PITR restore drills — clones into a private throwaway Cloud SQL instance (`ipv4Enabled: false`), verifies `RUNNABLE`, and confirms deletion after approval.
-- `opscrew destroy` — requires SHA-256 plan-hash approval plus typing your app's name (`allowDestroy: true`).
+- `opscrew destroy` — requires SHA-256 plan-hash approval plus typing your app's name (`allowDestroy: true`). Note: Google Cloud soft-deletes Workload Identity Pools for 30 days; if you re-provision the exact same app/environment within 30 days, undelete the pool with `gcloud iam workload-identity-pools undelete <pool-id> --location=global`.

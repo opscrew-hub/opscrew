@@ -24,7 +24,7 @@ afterEach(async () => {
   }
 });
 
-function sampleFacts(): ProjectFacts {
+function sampleFacts(dbKind: "postgres" | "mysql" = "postgres"): ProjectFacts {
   return {
     schemaVersion: 1,
     name: "acme-gcp",
@@ -35,7 +35,7 @@ function sampleFacts(): ProjectFacts {
     port: 3000,
     healthEndpoint: "/health",
     services: [
-      { kind: "postgres", confidence: "high", evidence: ["pg"] },
+      { kind: dbKind, confidence: "high", evidence: [dbKind] },
       { kind: "redis", confidence: "high", evidence: ["ioredis"] },
       { kind: "s3", confidence: "high", evidence: ["@aws-sdk/client-s3"] },
     ],
@@ -89,9 +89,9 @@ async function runTofuValidate(files: readonly { path: string; content: string }
 }
 
 describe.skipIf(!IT_ENABLED)("GCP HCL OpenTofu validation against hashicorp/google (T3908)", () => {
-  it("validates full Cloud Run v2 + Cloud SQL + Memorystore Valkey + GCS + Secret Manager + Global ALB HCL", async () => {
+  it("validates full Cloud Run v2 + Artifact Registry + Secrets + Cloud SQL Postgres + Memorystore Valkey + PSC + GCS + Global ALB HCL", async () => {
     const { target } = designGcpTarget({
-      facts: sampleFacts(),
+      facts: sampleFacts("postgres"),
       requirements: sampleRequirements(),
       preset: "production-ha",
     });
@@ -101,15 +101,16 @@ describe.skipIf(!IT_ENABLED)("GCP HCL OpenTofu validation against hashicorp/goog
       target,
       domain: "app.example.com",
       dnsProvider: "cloudflare",
+      secretNames: ["APP_SECRET", "DATABASE_URL"],
       github: { owner: "acme", repo: "web", environmentName: "prod" },
     });
     const result = await runTofuValidate(files);
     expect(result.valid, JSON.stringify(result.diagnostics, null, 2)).toBe(true);
   }, 600_000);
 
-  it("validates Compute Engine + Compose + existingVpcId HCL", async () => {
+  it("validates Compute Engine + Compose + Caddy + IAP + instance-scoped IAM + existingVpcId + MySQL + branch-mode WIF HCL", async () => {
     const base = designGcpTarget({
-      facts: sampleFacts(),
+      facts: sampleFacts("mysql"),
       requirements: sampleRequirements(),
       preset: "lean",
       pins: {
@@ -123,7 +124,8 @@ describe.skipIf(!IT_ENABLED)("GCP HCL OpenTofu validation against hashicorp/goog
         appName: "acme-gcp",
         environment: "dev",
         target: gce,
-        github: { owner: "acme", repo: "web", environmentName: "dev" },
+        domain: "dev.example.com",
+        github: { owner: "acme", repo: "web", branch: "main" },
       }),
     );
     expect(result.valid, JSON.stringify(result.diagnostics, null, 2)).toBe(true);
